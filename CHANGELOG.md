@@ -2,6 +2,25 @@
 
 All notable changes to this package will be documented in this file.
 
+## [2.40.0] - 2026-09-24
+
+Companion to server **2.36.0**. Capability handshake `protocolVersion` 1 → **2**. Older servers keep working unchanged, since every new field is additive.
+
+### Fixed
+- **A busy editor looked dead, and probing it could make it unresponsive.** `ping` ran through the main-thread queue, so a modal dialog, a long import, or a Multiplayer Play Mode session throttled in the background made discovery time out. Each probe also parked a thread-pool thread for the full 30s sync timeout, so enough probes starved the pool and even `queue/submit` stopped answering. `ping` (and the new `health`) are now answered on the listener thread from a snapshot the main thread publishes every tick (`MCPEditorHealth`).
+- **An abandoned command could run minutes later.** When a client gave up on a command stuck behind a blocked main thread, the ticket stayed queued and executed whenever the editor recovered. `queue/submit` now accepts `startTimeoutMs`. A ticket that has not *started* by then is dropped unexecuted (`TimedOut`, "dropped WITHOUT running"), and cancelled/expired tickets release their agent's queued-request count.
+
+### Added
+- **`queue/cancel`** (POST `{ticketId}`) cancels a ticket that has not started; for a started one it reports `Executing`/`Completed` instead.
+- **`queue/status` carries live editor state** (`editor`: `mainThreadStallMs`, `busy`, `busyReason`, `executing`, `isPlaying`, `isCompiling`, `applicationFocused`, `epoch`), so a poller can tell "waiting its turn" from "the editor is stuck" without an extra request. `epoch` changes on every domain reload, which tells clients that pending tickets were discarded. 404s from `queue/status` include it too.
+- **Unity console capture per command.** Warnings, errors, and exceptions logged *while a command executes* are returned in the ticket's `logs` (max 20, messages capped at 1000 chars, first 3 stack frames for errors). A call can "succeed" while Unity logs why it did nothing.
+- **Lightmap baking with a verifiable state machine**: `lighting/bake`, `lighting/bake-status`, `lighting/bake-cancel`, `lighting/clear-baked`. `bake` fails fast with the reason (Play mode, unsaved scene, compiling/importing). It checks that `Lightmapping.BakeAsync()` really started and reports the settings in use, plus hints for setups that would bake nothing (GI disabled, no *Contribute GI* renderers). `bake-status` reports `Idle`/`Running` (+ progress)/`Completed`/`Failed`/`Cancelled` along with the warnings/errors the lightmapper logged. A bake that stops without Unity's `bakeCompleted` is reported as `Failed`, never left as "running", and bakes started from the Lighting window are tracked too. State lives in `SessionState`, so it survives domain reloads.
+- **MPPM Virtual Players identify themselves**: `ping` and the instance registry carry `isVirtualPlayer` and `mainProjectPath`, so servers stop counting virtual players as extra editors that need a manual pick.
+- `MCPArgs.GetLong`.
+
+### Verified
+- Compiles with 0 errors against Unity 6000.0.79f1, 6000.3.21f1 and 6000.5.1f1 (no new deprecation warnings). Route registry regenerated (342 routes, `--check` clean). Not yet exercised in a live editor. The server's mock-bridge suite covers the wire protocol.
+
 ## [2.39.7] - 2026-09-24
 
 ### Fixed

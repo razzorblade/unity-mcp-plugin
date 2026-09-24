@@ -85,6 +85,7 @@ This package runs a lightweight HTTP bridge inside the Unity Editor on `localhos
 **Multiplayer (conditional on MPPM package):**
 
 - **MPPM Scenarios** — List, activate, start, stop multiplayer playmode scenarios; get status and player info (requires `com.unity.multiplayer.playmode`)
+- **Virtual Players** — Each virtual player advertises itself as one (`isVirtualPlayer`, `mainProjectPath`), so the MCP server keeps auto-selecting the main editor. Virtual players still start their own bridge (one port each from 7890–7899) unless you untick **Start on Virtual Players** in the Dashboard. Untick it if you run several projects with MPPM and ports run short.
 
 **Infrastructure:**
 
