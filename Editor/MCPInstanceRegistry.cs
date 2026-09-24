@@ -249,6 +249,10 @@ namespace UnityMCP.Editor
                     { "processId", System.Diagnostics.Process.GetCurrentProcess().Id },
                     { "isClone", IsParrelSyncClone() },
                     { "cloneIndex", GetParrelSyncCloneIndex() },
+                    // MPPM Virtual Players share the project's name; flagging them lets servers
+                    // keep auto-selecting the main editor instead of demanding a manual pick.
+                    { "isVirtualPlayer", MCPEditorHealth.IsVirtualPlayer },
+                    { "mainProjectPath", MCPEditorHealth.MainProjectPath },
                     { "registeredAt", nowUtc },
                     { "lastSeen", nowUtc }
                 };

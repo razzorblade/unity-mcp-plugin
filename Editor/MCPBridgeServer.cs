@@ -76,7 +76,10 @@ namespace UnityMCP.Editor
         // One monotonic int, bumped whenever the bridge gains a wire-visible capability.
         // Servers compare it to decide between fast paths and graceful fallbacks.
         // v1: baseline — advertises the handshake itself + unknown-route 404s.
-        private const int ProtocolVersion = 1;
+        // v2: ping/health answered off the main thread with live editor state + epoch,
+        //     queue/cancel, submit startTimeoutMs, editor health on queue/status,
+        //     per-ticket Unity console capture, lighting bake routes.
+        internal const int ProtocolVersion = 2;
 
         private static string _pluginVersion;
         private static string PluginVersion
@@ -187,6 +190,9 @@ namespace UnityMCP.Editor
 
             // Ensure console log capture is active before anything else
             MCPConsoleCommands.EnsureListening();
+
+            // Capture identity on the main thread so ping/health never need it again.
+            MCPEditorHealth.Initialize(PluginVersion, ProtocolVersion);
 
             // Clean up stale entries before selecting a port
             MCPInstanceRegistry.CleanupStaleEntries();
@@ -320,6 +326,9 @@ namespace UnityMCP.Editor
 
         private static void OnEditorUpdate()
         {
+            // Publish liveness for the off-main-thread ping/health endpoints.
+            MCPEditorHealth.Tick();
+
             // 0. Manual-port restart retry (issue #10): the manual port can be
             //    briefly unbindable after a domain reload — retry on a short delay.
             if (_manualPortRetryPending && !_isRunning &&
@@ -427,6 +436,7 @@ namespace UnityMCP.Editor
         private static bool IsReadOnlyRoute(string apiPath)
         {
             return apiPath == "ping"
+                || apiPath == "health"
                 || apiPath == "queue/status"
                 || apiPath == "queue/info"
                 || apiPath == "context"
@@ -480,6 +490,15 @@ namespace UnityMCP.Editor
                     return;
                 }
 
+                // ═══ Liveness (answered on this thread — never waits for the main thread) ═══
+                // Discovery and validation hit ping on every tool call; routing it through the
+                // main thread made a busy editor look dead and parked a pool thread per probe.
+                if (apiPath == "ping" || apiPath == "health")
+                {
+                    SendJson(response, 200, MCPEditorHealth.PingPayload());
+                    return;
+                }
+
                 string body = "";
                 if (request.HasEntityBody)
                 {
@@ -511,6 +530,11 @@ namespace UnityMCP.Editor
                 if (apiPath == "queue/status")
                 {
                     HandleQueueStatus(response, request);
+                    return;
+                }
+                if (apiPath == "queue/cancel")
+                {
+                    HandleQueueCancel(response, body);
                     return;
                 }
                 if (apiPath == "queue/info")
@@ -594,16 +618,19 @@ namespace UnityMCP.Editor
                 if (args.ContainsKey("agentId") && !string.IsNullOrEmpty(args["agentId"]?.ToString()))
                     agentId = args["agentId"].ToString();
 
+                // Optional: drop the ticket unexecuted if it cannot start in time (client gave up).
+                long startTimeoutMs = MCPArgs.GetLong(args, "startTimeoutMs", 0);
+
                 MCPRequestQueue.RequestTicket ticket;
                 if (_deferredRoutes.TryGetValue(apiPath, out var deferredHandler))
                 {
                     ticket = MCPRequestQueue.SubmitDeferredRequest(agentId, apiPath, resolve =>
-                        deferredHandler(ParseJson(innerBody), resolve));
+                        deferredHandler(ParseJson(innerBody), resolve), startTimeoutMs);
                 }
                 else
                 {
                     ticket = MCPRequestQueue.SubmitRequest(agentId, apiPath, () =>
-                        RouteRequest(apiPath, "POST", innerBody));
+                        RouteRequest(apiPath, "POST", innerBody), startTimeoutMs);
                 }
 
                 // Return immediately with ticket info
@@ -613,6 +640,7 @@ namespace UnityMCP.Editor
                     { "status",        ticket.Status.ToString() },
                     { "queuePosition", ticket.QueuePosition },
                     { "agentId",       agentId },
+                    { "epoch",         MCPEditorHealth.Epoch },
                 });
             }
             catch (Exception ex)
@@ -635,11 +663,48 @@ namespace UnityMCP.Editor
             var status = MCPRequestQueue.GetTicketStatus(ticketId);
             if (status == null)
             {
-                SendJson(response, 404, new { error = $"Ticket {ticketId} not found or expired" });
+                // Epoch lets the client tell "evicted by a domain reload" from "expired".
+                SendJson(response, 404, new Dictionary<string, object>
+                {
+                    { "error", $"Ticket {ticketId} not found or expired" },
+                    { "epoch", MCPEditorHealth.Epoch },
+                });
                 return;
             }
 
+            // Live editor state rides along so the poller can tell "waiting its turn" from
+            // "the main thread is stuck" without a second request.
+            status["editor"] = MCPEditorHealth.CompactSnapshot();
             SendJson(response, 200, status);
+        }
+
+        // ─── Queue Cancel ───
+
+        private static void HandleQueueCancel(HttpListenerResponse response, string body)
+        {
+            long ticketId;
+            try
+            {
+                ticketId = MCPArgs.GetLong(ParseJson(body), "ticketId", -1);
+            }
+            catch (ArgumentException ex)
+            {
+                SendJson(response, 400, new { error = ex.Message });
+                return;
+            }
+            if (ticketId < 0)
+            {
+                SendJson(response, 400, new { error = "Missing 'ticketId'" });
+                return;
+            }
+
+            var result = MCPRequestQueue.Cancel(ticketId);
+            if (result == null)
+            {
+                SendJson(response, 404, new { error = $"Ticket {ticketId} not found or expired" });
+                return;
+            }
+            SendJson(response, 200, result);
         }
 
         // ─── Route Request (runs on main thread) ───
@@ -701,23 +766,11 @@ namespace UnityMCP.Editor
             switch (path)
             {
                 // ─── Ping ───
+                // Normally answered off-thread in HandleRequest; this case serves a queued
+                // "ping" ticket. The payload carries protocolVersion/pluginVersion — the
+                // capability handshake servers gate newer wire features on.
                 case "ping":
-                    return new
-                    {
-                        status = "ok",
-                        unityVersion = Application.unityVersion,
-                        projectName = Application.productName,
-                        projectPath = GetProjectPath(),
-                        platform = Application.platform.ToString(),
-                        isClone = MCPInstanceRegistry.IsParrelSyncClone(),
-                        cloneIndex = MCPInstanceRegistry.GetParrelSyncCloneIndex(),
-                        processId = System.Diagnostics.Process.GetCurrentProcess().Id,
-                        // Capability handshake: servers gate newer wire features on this
-                        // monotonic int so the pair degrades gracefully across version
-                        // drift (server and plugin ship on separate release trains).
-                        protocolVersion = ProtocolVersion,
-                        pluginVersion = PluginVersion
-                    };
+                    return MCPEditorHealth.PingPayload();
 
                 // ─── Editor State ───
                 case "editor/state":
@@ -938,6 +991,14 @@ namespace UnityMCP.Editor
                     return MCPLightingCommands.CreateReflectionProbe(ParseJson(body));
                 case "lighting/create-light-probe-group":
                     return MCPLightingCommands.CreateLightProbeGroup(ParseJson(body));
+                case "lighting/bake":
+                    return MCPLightingCommands.Bake(ParseJson(body));
+                case "lighting/bake-status":
+                    return MCPLightingCommands.GetBakeStatus(ParseJson(body));
+                case "lighting/bake-cancel":
+                    return MCPLightingCommands.CancelBake(ParseJson(body));
+                case "lighting/clear-baked":
+                    return MCPLightingCommands.ClearBaked(ParseJson(body));
 
                 // ─── Audio ───
                 case "audio/info":
@@ -1597,12 +1658,6 @@ namespace UnityMCP.Editor
             response.ContentLength64 = buffer.Length;
             response.OutputStream.Write(buffer, 0, buffer.Length);
             response.OutputStream.Close();
-        }
-
-        private static string GetProjectPath()
-        {
-            string dataPath = Application.dataPath;
-            return dataPath.Substring(0, dataPath.Length - "/Assets".Length);
         }
     }
 }

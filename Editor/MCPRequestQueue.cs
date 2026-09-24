@@ -26,7 +26,7 @@ namespace UnityMCP.Editor
         //  Ticket
         // ═══════════════════════════════════════════════════════
 
-        public enum RequestStatus { Queued, Executing, Completed, Failed, TimedOut }
+        public enum RequestStatus { Queued, Executing, Completed, Failed, TimedOut, Cancelled }
 
         public class RequestTicket
         {
@@ -49,6 +49,14 @@ namespace UnityMCP.Editor
             public DateTime  SubmittedAt   { get; set; }
             public DateTime? CompletedAt   { get; set; }
             public int       QueuePosition { get; set; }
+
+            // Latest moment execution may START. A client that stopped waiting must never see
+            // its (possibly non-idempotent) command run minutes later once a stalled main thread
+            // resumes — past this deadline the ticket is dropped unexecuted.
+            public DateTime? StartDeadline { get; set; }
+
+            // Warnings/errors Unity logged while this ticket executed (null when none).
+            public List<Dictionary<string, object>> Logs { get; set; }
 
             public long ExecutionTimeMs =>
                 CompletedAt.HasValue
@@ -99,6 +107,53 @@ namespace UnityMCP.Editor
         public const int SyncTimeoutMs                = 30_000;
         private const int MaxReadBatchSize            = 5;
 
+        // Per-ticket console capture bounds
+        private const int MaxCapturedLogs             = 20;
+        private const int MaxCapturedLogChars         = 1000;
+
+        // ═══════════════════════════════════════════════════════
+        //  Console capture + current-action tracking
+        // ═══════════════════════════════════════════════════════
+
+        // Ticket whose action is running right now on the main thread (null otherwise).
+        // logMessageReceived fires synchronously on the main thread, so a log arriving while
+        // this is set was produced by that action.
+        private static RequestTicket _captureTicket;
+
+        // Name of the action executing on the main thread, readable from any thread — lets the
+        // off-thread health snapshot say WHY the main thread is not ticking.
+        private static string _currentActionName;
+
+        /// <summary>Action currently executing on the main thread, or null. Any thread.</summary>
+        public static string CurrentActionName => Volatile.Read(ref _currentActionName);
+
+        static MCPRequestQueue()
+        {
+            Application.logMessageReceived += CaptureLog;
+        }
+
+        private static void CaptureLog(string condition, string stackTrace, LogType type)
+        {
+            var ticket = _captureTicket;
+            if (ticket == null || type == LogType.Log) return;
+            // Our own diagnostics are not the command's output.
+            if (condition != null && (condition.StartsWith("[Unity MCP Queue]") || condition.StartsWith("[AB-UMCP]"))) return;
+
+            if (ticket.Logs == null) ticket.Logs = new List<Dictionary<string, object>>();
+            if (ticket.Logs.Count >= MaxCapturedLogs) return;
+
+            string message = condition ?? "";
+            if (message.Length > MaxCapturedLogChars) message = message.Substring(0, MaxCapturedLogChars) + "…";
+            var entry = new Dictionary<string, object> { { "type", type.ToString() }, { "message", message } };
+            if ((type == LogType.Exception || type == LogType.Error) && !string.IsNullOrEmpty(stackTrace))
+            {
+                // First frames only — enough to locate the failure without flooding the response.
+                var lines = stackTrace.Split('\n');
+                entry["stackTrace"] = string.Join("\n", lines, 0, Math.Min(3, lines.Length)).Trim();
+            }
+            ticket.Logs.Add(entry);
+        }
+
         // ═══════════════════════════════════════════════════════
         //  Public API — Submit
         // ═══════════════════════════════════════════════════════
@@ -107,18 +162,25 @@ namespace UnityMCP.Editor
         /// Submit a request to the queue. Returns a ticket immediately (non-blocking).
         /// The action will be executed on the main thread when its turn comes.
         /// </summary>
-        public static RequestTicket SubmitRequest(string agentId, string actionName, Func<object> action)
+        /// <param name="startTimeoutMs">
+        /// When &gt; 0, the ticket is dropped unexecuted (TimedOut) if it has not started within this
+        /// window — the caller has given up by then and a late run would surprise it.
+        /// </param>
+        public static RequestTicket SubmitRequest(string agentId, string actionName, Func<object> action,
+            long startTimeoutMs = 0)
         {
             if (string.IsNullOrEmpty(agentId)) agentId = "anonymous";
 
+            var now = DateTime.UtcNow;
             var ticket = new RequestTicket
             {
-                TicketId    = Interlocked.Increment(ref _nextTicketId),
-                AgentId     = agentId,
-                ActionName  = actionName,
-                Status      = RequestStatus.Queued,
-                SubmittedAt = DateTime.UtcNow,
-                Action      = action,
+                TicketId      = Interlocked.Increment(ref _nextTicketId),
+                AgentId       = agentId,
+                ActionName    = actionName,
+                Status        = RequestStatus.Queued,
+                SubmittedAt   = now,
+                Action        = action,
+                StartDeadline = startTimeoutMs > 0 ? now.AddMilliseconds(startTimeoutMs) : (DateTime?)null,
             };
 
             lock (_queueLock)
@@ -146,18 +208,20 @@ namespace UnityMCP.Editor
         /// Use for Unity APIs with async callbacks (e.g. TestRunnerApi.RetrieveTestList).
         /// </summary>
         public static RequestTicket SubmitDeferredRequest(string agentId, string actionName,
-            Action<Action<object>> deferredAction)
+            Action<Action<object>> deferredAction, long startTimeoutMs = 0)
         {
             if (string.IsNullOrEmpty(agentId)) agentId = "anonymous";
 
+            var now = DateTime.UtcNow;
             var ticket = new RequestTicket
             {
                 TicketId       = Interlocked.Increment(ref _nextTicketId),
                 AgentId        = agentId,
                 ActionName     = actionName,
                 Status         = RequestStatus.Queued,
-                SubmittedAt    = DateTime.UtcNow,
+                SubmittedAt    = now,
                 DeferredAction = deferredAction,
+                StartDeadline  = startTimeoutMs > 0 ? now.AddMilliseconds(startTimeoutMs) : (DateTime?)null,
             };
 
             lock (_queueLock)
@@ -256,13 +320,17 @@ namespace UnityMCP.Editor
                 batch = DequeueNextBatch();
                 if (batch == null || batch.Count == 0) return;
 
-                // Drop tickets whose sync waiter already gave up (TimedOut). The client was
-                // told the call failed and may have retried; executing the abandoned ticket
-                // now would run a non-idempotent action a second time. ExecuteWithTracking
-                // sets TimedOut under this same lock, so this check is race-safe.
+                // Drop tickets whose sync waiter already gave up (TimedOut), that were cancelled,
+                // or whose start deadline passed while the main thread was stalled. The client was
+                // told the call failed and may have retried; executing the abandoned ticket now
+                // would run a non-idempotent action a second time. ExecuteWithTracking and Cancel
+                // set their status under this same lock, so this check is race-safe.
+                var now = DateTime.UtcNow;
                 batch.RemoveAll(t =>
                 {
-                    if (t.Status == RequestStatus.TimedOut)
+                    if (t.Status == RequestStatus.Queued && IsPastStartDeadline(t, now))
+                        ExpireUnstarted(t, now);
+                    if (t.Status == RequestStatus.TimedOut || t.Status == RequestStatus.Cancelled)
                     {
                         _executingTickets.Remove(t.TicketId);
                         return true;
@@ -311,6 +379,8 @@ namespace UnityMCP.Editor
                 if (ticket.DeferredAction != null)
                 {
                     var deferredTicket = ticket; // capture for closure
+                    // Only the synchronous kick-off is attributable; the callback fires frames later.
+                    BeginExecution(deferredTicket);
                     try
                     {
                         deferredTicket.DeferredAction(result =>
@@ -347,9 +417,14 @@ namespace UnityMCP.Editor
                                 w.Set();
                         }
                     }
+                    finally
+                    {
+                        EndExecution();
+                    }
                     continue; // Skip normal completion — callback handles it
                 }
 
+                BeginExecution(ticket);
                 try
                 {
                     ticket.Result = ticket.Action();
@@ -360,6 +435,10 @@ namespace UnityMCP.Editor
                     ticket.Status       = RequestStatus.Failed;
                     ticket.ErrorMessage = ex.Message;
                     Debug.LogError($"[Unity MCP Queue] Ticket {ticket.TicketId} ({ticket.ActionName}) failed: {ex.Message}");
+                }
+                finally
+                {
+                    EndExecution();
                 }
                 ticket.CompletedAt = DateTime.UtcNow;
                 ticket.Action      = null; // Free the closure
@@ -461,6 +540,55 @@ namespace UnityMCP.Editor
                             return TicketToDict(t);
             }
             return null;
+        }
+
+        /// <summary>
+        /// Cancel a ticket that has not started yet. A started ticket cannot be interrupted (Unity
+        /// APIs are not cancellable mid-call) — the response says so, letting the client report
+        /// "may still complete" instead of "did not run". Returns null when the ticket is unknown.
+        /// </summary>
+        public static Dictionary<string, object> Cancel(long ticketId)
+        {
+            lock (_queueLock)
+            {
+                foreach (var kvp in _agentQueues)
+                {
+                    RequestTicket target = null;
+                    foreach (var t in kvp.Value)
+                        if (t.TicketId == ticketId) { target = t; break; }
+                    if (target == null) continue;
+
+                    // Rebuild the agent's FIFO without the cancelled ticket (queues are short).
+                    var remaining = new Queue<RequestTicket>();
+                    foreach (var t in kvp.Value)
+                        if (t.TicketId != ticketId) remaining.Enqueue(t);
+                    _agentQueues[kvp.Key] = remaining;
+
+                    target.Status       = RequestStatus.Cancelled;
+                    target.ErrorMessage = "Cancelled by the client before it started — the command did NOT run.";
+                    target.CompletedAt  = DateTime.UtcNow;
+                    target.Action         = null;
+                    target.DeferredAction = null;
+                    _completedTickets[ticketId] = target;
+                    if (_waiters.TryGetValue(ticketId, out var waiter)) waiter.Set();
+                    if (_sessions.TryGetValue(target.AgentId, out var session)) session.ReleaseQueuedRequest();
+
+                    return new Dictionary<string, object>
+                    {
+                        { "ticketId", ticketId }, { "cancelled", true }, { "status", target.Status.ToString() },
+                    };
+                }
+
+                RequestTicket known = null;
+                if (!_executingTickets.TryGetValue(ticketId, out known))
+                    _completedTickets.TryGetValue(ticketId, out known);
+                if (known == null) return null;
+
+                return new Dictionary<string, object>
+                {
+                    { "ticketId", ticketId }, { "cancelled", false }, { "status", known.Status.ToString() },
+                };
+            }
         }
 
         /// <summary>Returns overall queue stats.</summary>
@@ -611,6 +739,35 @@ namespace UnityMCP.Editor
             return batch;
         }
 
+        private static bool IsPastStartDeadline(RequestTicket ticket, DateTime now) =>
+            ticket.StartDeadline.HasValue && now > ticket.StartDeadline.Value;
+
+        /// <summary>Mark a never-started ticket as dropped. Must be called under _queueLock.</summary>
+        private static void ExpireUnstarted(RequestTicket ticket, DateTime now)
+        {
+            double waitedSec = (now - ticket.SubmittedAt).TotalSeconds;
+            ticket.Status       = RequestStatus.TimedOut;
+            ticket.ErrorMessage = $"Not started within {waitedSec:0}s (the editor main thread was busy) — dropped WITHOUT running.";
+            ticket.CompletedAt  = now;
+            ticket.Action         = null;
+            ticket.DeferredAction = null;
+            _completedTickets[ticket.TicketId] = ticket;
+            if (_waiters.TryGetValue(ticket.TicketId, out var waiter)) waiter.Set();
+            if (_sessions.TryGetValue(ticket.AgentId, out var session)) session.ReleaseQueuedRequest();
+        }
+
+        private static void BeginExecution(RequestTicket ticket)
+        {
+            _captureTicket = ticket;
+            Volatile.Write(ref _currentActionName, ticket.ActionName ?? "unknown");
+        }
+
+        private static void EndExecution()
+        {
+            _captureTicket = null;
+            Volatile.Write(ref _currentActionName, null);
+        }
+
         private static bool IsReadOperation(string actionName)
         {
             if (string.IsNullOrEmpty(actionName)) return false;
@@ -638,7 +795,8 @@ namespace UnityMCP.Editor
                 || lower.Contains("/info")
                 || lower.Contains("/list")
                 || lower.Contains("/get-")
-                || lower.Contains("/status");
+                || lower.Contains("/status")
+                || lower.EndsWith("-status");
         }
 
         // Cached reflection for UnityEditor.Undo.GetRecords(List<string>, List<string>) — the
@@ -725,6 +883,29 @@ namespace UnityMCP.Editor
                 foreach (var id in kill)
                     _completedTickets.Remove(id);
 
+                // Expire queued tickets whose start deadline passed, so their status turns
+                // terminal promptly instead of only when they reach the head of the queue.
+                bool expiredAny = false;
+                foreach (var q in _agentQueues.Values)
+                    foreach (var t in q)
+                        if (t.Status == RequestStatus.Queued && IsPastStartDeadline(t, now))
+                        {
+                            ExpireUnstarted(t, now);
+                            expiredAny = true;
+                        }
+                if (expiredAny)
+                {
+                    var agents = new List<string>(_agentQueues.Keys);
+                    foreach (var agent in agents)
+                    {
+                        var kept = new Queue<RequestTicket>();
+                        foreach (var t in _agentQueues[agent])
+                            if (t.Status == RequestStatus.Queued) kept.Enqueue(t);
+                        _agentQueues[agent] = kept;
+                    }
+                    PurgeEmptyQueues();
+                }
+
                 // Safety valve: clean up stale executing tickets (stuck > 120s)
                 var staleExecuting = new List<long>();
                 foreach (var kvp in _executingTickets)
@@ -758,6 +939,11 @@ namespace UnityMCP.Editor
             // Include result for completed tickets
             if (t.Status == RequestStatus.Completed || t.Status == RequestStatus.Failed)
                 dict["result"] = t.Result;
+
+            // Warnings/errors Unity logged while the command ran — often the only evidence
+            // that a call "succeeded" without doing what was asked (e.g. a refused bake).
+            if (t.Logs != null && t.Logs.Count > 0)
+                dict["logs"] = t.Logs;
 
             return dict;
         }

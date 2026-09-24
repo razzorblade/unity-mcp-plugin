@@ -95,6 +95,16 @@ namespace UnityMCP.Editor
                 _totalResponseTimeMs += responseTimeMs;
         }
 
+        /// <summary>
+        /// Release a queued slot for a request that left the queue without running
+        /// (cancelled by the client or dropped past its start deadline).
+        /// </summary>
+        public void ReleaseQueuedRequest()
+        {
+            if (_queuedRequests > 0)
+                _queuedRequests--;
+        }
+
         public List<string> GetLog() => new List<string>(_actionLog);
 
         public Dictionary<string, object> ToDict()

@@ -63,6 +63,28 @@ namespace UnityMCP.Editor
             }
         }
 
+        public static long GetLong(Dictionary<string, object> args, string key, long defaultValue)
+        {
+            if (args == null || !args.TryGetValue(key, out object value) || value == null)
+                return defaultValue;
+
+            switch (value)
+            {
+                case long l: return l;
+                case int i: return i;
+                case double d:
+                    double rounded = Math.Round(d);
+                    if (Math.Abs(d - rounded) < 1e-6) return checked((long)rounded);
+                    throw new ArgumentException($"Parameter '{key}' must be an integer (got {d.ToString(CultureInfo.InvariantCulture)}).");
+                case string s:
+                    if (long.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture, out long parsed))
+                        return parsed;
+                    throw new ArgumentException($"Parameter '{key}' is not a valid integer: '{s}'.");
+                default:
+                    throw new ArgumentException($"Parameter '{key}' must be an integer (got {value.GetType().Name}).");
+            }
+        }
+
         public static bool GetBool(Dictionary<string, object> args, string key, bool defaultValue)
         {
             if (args == null || !args.TryGetValue(key, out object value) || value == null)

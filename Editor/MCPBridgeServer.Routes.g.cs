@@ -9,7 +9,7 @@ namespace UnityMCP.Editor
 {
     public static partial class MCPBridgeServer
     {
-        /// <summary>Every route the bridge can dispatch (338 routes).</summary>
+        /// <summary>Every route the bridge can dispatch (342 routes).</summary>
         internal static readonly string[] GeneratedRoutes = new string[]
         {
             "_meta/routes",
@@ -124,6 +124,10 @@ namespace UnityMCP.Editor
             "input/info",
             "input/remove-action",
             "input/remove-map",
+            "lighting/bake",
+            "lighting/bake-cancel",
+            "lighting/bake-status",
+            "lighting/clear-baked",
             "lighting/create",
             "lighting/create-light-probe-group",
             "lighting/create-reflection-probe",
