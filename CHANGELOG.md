@@ -2,378 +2,52 @@
 
 All notable changes to this package will be documented in this file.
 
-## [2.40.0] - 2026-09-24
+## [2.41.0] - 2026-09-25
 
-Companion to server **2.36.0**. Capability handshake `protocolVersion` 1 → **2**. Older servers keep working unchanged, since every new field is additive.
+Companion to server **2.37.0** (token-budget paging). Every response is read by an LLM, so bytes are tokens: the read endpoints now answer in dense JSON that drops only what the reader can reconstruct. No information is removed. `verbose:true` restores the previous shape on every endpoint listed below.
+
+### Changed: token-dense responses
+- **Vectors and colors are arrays**: `[x,y,z]`, `[r,g,b,a]`. This applies to the hierarchy, transforms, physics, lighting, selection and graphics outputs, and to property values. The code is one shared writer (`MCPWire`); it used to be six copies.
+- **Row lists are tables**: `{columns, common?, groupedBy, groups:{prefix:[[...]]}}`. Columns that hold the same value on every row are stated once in `common`, and rows are grouped by parent path or folder, so the full path is `prefix + "/" + first cell`. A GameObject whose name contains `/` still round-trips. This applies to the `search/*` endpoints (by component, tag, layer, name and shader, missing references, assets), `asset/list`, `selection/find-by-type`, `packages/list`, `packages/search` and the `graphics/material-info` properties.
+- **Default-valued and derivable fields are omitted**:
+  - `gameobject/info`:
+    - Local transform appears only when it differs from world, and `lossyScale` only when it differs from scale.
+    - `layerIndex`, `childCount` and `parent` are dropped (derivable).
+    - Disabled components are listed once (`Type#2` = the second of that type).
+    - Namespaces are listed only for non-`UnityEngine` types.
+  - Property reads: `displayName` appears only when it differs from the nicified name, and `editable` only when false.
+  - `prefab-asset/hierarchy`: dense like `scene/hierarchy`, and it gains `maxNodes`.
+  - `graphics` bounds: center and size only (extents, min and max are derivable).
+- **`console/log` collapses identical entries** (type + message + stack trace), like the Console window's Collapse toggle. Each entry gets `repeats` and `firstTimestamp`. `count` now bounds distinct entries, so one error spamming every frame no longer pushes every other message out. Empty stack traces are omitted. `collapse:false` gives the old behaviour.
+- **`prefab/info` overrides are grouped per target**: `{"Name (Type)": {propertyPath: value}}`. The bare target name used to be ambiguous, because a GameObject and each of its components share one name.
+- Measured on a probe scene (Claude tokenizer, dense vs verbose):
+
+  | Endpoint | Tokens saved |
+  |---|---|
+  | console/log | 83% |
+  | prefab-asset/hierarchy | 71% |
+  | gameobject/info | 70% |
+  | search | 64% |
+  | asset/list | 41% |
+  | prefab/info | 40% |
+  | component properties | 37% |
+  | scene/hierarchy | 33% |
+  | scriptableobject/info | 32% |
 
 ### Fixed
-- **A busy editor looked dead, and probing it could make it unresponsive.** `ping` ran through the main-thread queue, so a modal dialog, a long import, or a Multiplayer Play Mode session throttled in the background made discovery time out. Each probe also parked a thread-pool thread for the full 30s sync timeout, so enough probes starved the pool and even `queue/submit` stopped answering. `ping` (and the new `health`) are now answered on the listener thread from a snapshot the main thread publishes every tick (`MCPEditorHealth`).
-- **An abandoned command could run minutes later.** When a client gave up on a command stuck behind a blocked main thread, the ticket stayed queued and executed whenever the editor recovered. `queue/submit` now accepts `startTimeoutMs`. A ticket that has not *started* by then is dropped unexecuted (`TimedOut`, "dropped WITHOUT running"), and cancelled/expired tickets release their agent's queued-request count.
+- **Arrays and nested structs came back as the literal string `"Generic"`.** Property reads were top-level only, so their data never reached the caller. Component, prefab-asset and ScriptableObject reads now share one recursive reader (`MCPPropertyReader`). Past `maxDepth` (default 4) a subtree becomes `{"$more": "<propertyPath>"}`, and arrays longer than `maxArrayElements` (default 100) become `{length, items}`. The new `propertyPath` argument reads any single nested property.
+- **`asset/list` ignored `maxResults`** and returned the whole folder however large. It now honours `maxResults` (default 500) plus `offset`, and reports `totalFound`, `truncated` and `nextOffset`. `includeGuid:false` drops the GUIDs, which are about 80% of a listing.
+- **`graphics/mesh-info`, `material-info` and `renderer-info` never saw the object path.** The MCP schemas send `objectPath` but the handlers read `gameObjectPath`, so `renderer-info` (where the path is required) could not succeed at all. Both names are accepted now.
+- **`graphics/material-info` and `texture-info` ignored `includePreview` and `previewSize`** and always rendered a preview. Both are honoured now, and `previewSize` actually scales the preview.
+- **A vector sent as an array was silently set to zero.** Setters cast the argument `as Dictionary`, so `[1,2,3]` became `Vector3.zero`. Every vector and color input (`MCPArgs.ToVector3`, `ToColor` and the others) accepts both forms, and an unreadable value fails with an error. `Quaternion` properties can now be set.
+- **`scriptableobject/info` formatted vectors with the current culture.** On decimal-comma locales it wrote `"(1,5, 2)"`. Values are typed now.
+- Unbounded replies are capped: `selection/find-by-type` (`limit`, default 500) and `packages/search` (`limit`, default 50). Both report `totalFound` and `truncated`.
 
-### Added
-- **`queue/cancel`** (POST `{ticketId}`) cancels a ticket that has not started; for a started one it reports `Executing`/`Completed` instead.
-- **`queue/status` carries live editor state** (`editor`: `mainThreadStallMs`, `busy`, `busyReason`, `executing`, `isPlaying`, `isCompiling`, `applicationFocused`, `epoch`), so a poller can tell "waiting its turn" from "the editor is stuck" without an extra request. `epoch` changes on every domain reload, which tells clients that pending tickets were discarded. 404s from `queue/status` include it too.
-- **Unity console capture per command.** Warnings, errors, and exceptions logged *while a command executes* are returned in the ticket's `logs` (max 20, messages capped at 1000 chars, first 3 stack frames for errors). A call can "succeed" while Unity logs why it did nothing.
-- **Lightmap baking with a verifiable state machine**: `lighting/bake`, `lighting/bake-status`, `lighting/bake-cancel`, `lighting/clear-baked`. `bake` fails fast with the reason (Play mode, unsaved scene, compiling/importing). It checks that `Lightmapping.BakeAsync()` really started and reports the settings in use, plus hints for setups that would bake nothing (GI disabled, no *Contribute GI* renderers). `bake-status` reports `Idle`/`Running` (+ progress)/`Completed`/`Failed`/`Cancelled` along with the warnings/errors the lightmapper logged. A bake that stops without Unity's `bakeCompleted` is reported as `Failed`, never left as "running", and bakes started from the Lighting window are tracked too. State lives in `SessionState`, so it survives domain reloads.
-- **MPPM Virtual Players identify themselves**: `ping` and the instance registry carry `isVirtualPlayer` and `mainProjectPath`, so servers stop counting virtual players as extra editors that need a manual pick.
-- `MCPArgs.GetLong`.
+### Compatibility
+- Response shapes changed. Anything that parses the old shapes should pass `verbose:true`. Inputs accept both the old and new vector forms, and older servers work unchanged.
 
 ### Verified
-- Compiles with 0 errors against Unity 6000.0.79f1, 6000.3.21f1 and 6000.5.1f1 (no new deprecation warnings). Route registry regenerated (342 routes, `--check` clean). Not yet exercised in a live editor. The server's mock-bridge suite covers the wire protocol.
+- Compiles with 0 errors on Unity 6000.0.79f1, 6000.3.21f1 and 6000.5.1f1. Route registry unchanged (342 routes, `--check` clean).
+- A batch-mode harness built a probe scene (nested arrays and structs, duplicate components, a GameObject named `A/B`, 39 console logs, a prefab instance with overrides). It called the real handlers dense and verbose, checked every expectation above, and exercised array and object vector inputs. The bridge itself does not run in batch mode, so HTTP was not exercised.
+- Unity 6000.3.21f1 exits with a crash (exit 139) at the end of every batch-mode run, after "Batchmode quit successfully invoked". This is an editor bug, not the package: an empty project without the package crashes the same way, including through `-quit` with or without `-nographics`, and through `EditorApplication.Exit(0)`. Compilation is unaffected (0 errors). Scripted checks on that version should read the log rather than the exit code.
 
-## [2.39.7] - 2026-09-24
-
-### Fixed
-- **The dashboard had no working menu entry.** It was registered at `Window/AB Unity MCP`, the same path as the `Welcome` and `Action History` submenu, so Unity turned the path into a submenu and hid the leaf: the dashboard could not be opened from the menu, and `EditorApplication.ExecuteMenuItem("Window/AB Unity MCP")` failed with a console error. It now lives at **`Window/AB Unity MCP/Dashboard`**, first in that submenu. The toolbar button is unchanged, and the "Enable it in Window > AB Unity MCP" messages now name the Dashboard entry.
-
-## [2.39.6] - 2026-09-24
-
-### Fixed
-- **The welcome window pulled a background editor to the front.** It opens on the first Unity start of a project, and on every start until "Don't show again" is ticked. When Unity was launched in the background (by an agent, a script, a CI helper), the first thing that drained the editor's `delayCall` queue (an MCP request, typically) opened it, and creating a window brings the editor to the front even when it is not asked for focus. The auto-open now runs only while Unity is the active application; otherwise it waits for `EditorApplication.focusChanged` and opens when the user comes back to Unity. It never opens in batch mode. Opening it from the menu is unchanged.
-- Verified on Unity 6000.0.68f1 with Unity launched in the background: after the queue drains, including through a real MCP call, no window opens and nothing comes to the front. Opening on return was confirmed by hand on the AnkleBreaker package welcome window, which uses the same code. Compiles with 0 errors and 0 warnings against Unity 2022.3.
-
-## [2.39.5] - 2026-07-27
-
-Community-reported fixes. Each claim was verified against the shipped Unity assemblies before being acted on — two held up, one did not (documented below).
-
-### Fixed (ShaderGraph — community PR #23 by @mrooney)
-- **`get_edges` reported every edge with blank ids.** The `m_OutputSlot`/`m_InputSlot` patterns used `.*?` **without** `RegexOptions.Singleline`, so `.` could not cross the newline between the key and the nested `m_Id` — and a `.shadergraph` writes one field per line. Every id came back `""` and every slot `0`, while the on-disk edges were perfectly correct (read-only path, nothing was ever corrupted). Verified live: `connect` → `get_edges` now returns the real objectId and slot.
-- **Property nodes were still added unbound (issue #18 bug 3).** The `GraphData` rewrite fixed the other three bugs but added Property nodes type-only, so they serialized with an empty `m_Property` and no slots and the next import threw in `PropertyNode.AddOutputSlot`, failing the whole asset. `add_node` now accepts `propertyId` (alias `property`) and binds through `PropertyNode.property`, which rebuilds the output slot from the property's concrete type. An unbound or unknown Property node is now **refused before anything is written** — verified live, target graph intact.
-- **The version-mismatch guard now names names.** It reported "One or more ShaderGraph API methods not found", which made any report against this path unfalsifiable in both directions. It now lists exactly which members are missing and asks for the Unity + ShaderGraph versions.
-- **`AddNode` accepts either arity.** PR #23's premise was that ShaderGraph 17.3.0 only exposes `AddNode(node, bool)`, disabling the whole suite on Unity 6.3. Reflecting the shipped `Unity.ShaderGraph.Editor` on 17.3.0 shows the opposite — only the 1-arg `AddNode(AbstractMaterialNode)` exists — so we could not reproduce it. Accepting both shapes costs nothing and removes the question. Property-binding members are resolved **optionally**, so a build lacking `PropertyNode` can never disable the entire ShaderGraph surface (the all-or-nothing brittleness the PR would otherwise have introduced).
-
-### Fixed (community PR #19 by @JetNik)
-- **`execute_code` still failed on macOS.** Unity 6000.3+ re-roots the scripting assemblies under `Contents/Resources/Scripting`, and probing only that bare folder missed the nested `MonoBleedingEdge/…` and `DotNetSdkRoslyn` layout inside it. Each Roslyn subpath is now mirrored there. Inert off macOS — the existing `Directory.Exists` guard skips absent paths — and `execute_code` verified still resolving Roslyn on Windows.
-
-### Added (issue #30 by @VM233 — 2D sprite animation)
-- **`animation/set-object-reference-curve`** — object-reference (PPtr) curves, the type Unity uses for `SpriteRenderer.m_Sprite`. `clip.SetCurve`/`AnimationCurve` can only express **float** curves, so sprite-frame animation had no route through the MCP at all and had to be hand-written as `.anim` YAML (version-fragile, and it produced `curve type is invalid` import errors). Routes through `AnimationUtility.SetObjectReferenceCurve` + `EditorCurveBinding.PPtrCurve` so Unity writes the binding itself. Keyframes take an asset path plus an optional sub-asset `name` to select one sprite from a sliced sheet, and the call **fails closed** if any keyframe is unresolvable rather than leaving a clip animating to the wrong frames.
-- **`animation/clip-info` now reports object-reference curves.** `GetCurveBindings` returns only float bindings, so a correct sprite clip reported `curveCount: 0` and looked empty — the reporter had no way to verify their own work. Adds `objectReferenceCurves` with binding path, property, type, and each keyframe's time + resolved asset path.
-- Verified end to end: a 3-frame sprite clip built through the real MCP tool, read back correctly, and re-imported by Unity with **0 console errors** and all references resolved. Route registry 337 → 338.
-
-## [2.39.4] - 2026-07-24
-
-Findings from a 33-dimension + 10-blind-spot audit (127 + 40 agents, every CRITICAL/HIGH adversarially verified). The recurring pattern: a correct pattern existed but was never propagated, and guards failed OPEN.
-
-### Security
-- **CRITICAL — arbitrary `.md` file read over an unauthenticated GET.** `MCPContextManager.GetContextByCategory` fed the raw URL segment into `Path.Combine`, so `GET /api/context/..%2f..%2f..%2fsecret` escaped the context folder (and an absolute path replaced it outright). Category names are now allowlisted to a plain filename, optionally under `Custom/`. Live-verified: six traversal/absolute/NUL payloads all blocked while plain, `Custom/`-prefixed and bare-name lookups still resolve.
-- **Browser-reachable dispatch closed.** The Origin check only ran when an Origin was *present*, but a no-cors subresource load (`<img>`, `<iframe>`) sends none — so a page a developer merely visited could reach the bridge. Requests carrying browser `Sec-Fetch-Site`/`Sec-Fetch-Mode` metadata are now refused (page script cannot forge those headers), and every non-read-only route requires **POST**, which a no-cors GET can never be.
-- **Inbound request bodies are bounded (32 MB).** The read was an unbounded `ReadToEnd`; any local process could drive the editor into an OOM with one request. Oversized bodies get a 413, including chunked bodies with no declared length.
-
-### Fixed — data safety
-- **`asset/delete` is no longer a silent, permanent, unconfined delete.** It now resolves through `MCPAssetSafety`, refuses a FOLDER unless `recursive:true` (reporting how many assets it would take), and defaults to the OS trash (`permanent:true` restores the hard delete). Asset deletion registers nothing on the undo stack, so `unity_undo_last` could never bring it back.
-- **`scene/new` no longer discards unsaved work silently.** It replaced the current scene with no check while `scene/open` twenty lines above had one. Both now refuse when ANY loaded scene is dirty (multi-scene setups included) unless `saveFirst` or `discardUnsavedChanges` is passed.
-- **No more modal dialogs inside the request pump.** Three separate paths could raise a dialog that blocks the editor on a human click — and blocks *forever* on an unattended/CI editor:
-  - `scene/open` called `SaveCurrentModifiedScenesIfUserWantsTo()`; the decision now comes from the arguments.
-  - The new guard's own `saveFirst:true` escape hatch called `SaveOpenScenes()`, which raises the native **Save Scene** panel for a scene that has never been saved — reintroducing the exact modal the guard was written to remove. It now refuses when any dirty scene has no asset path, naming those scenes. (Caught by the follow-up audit reviewing the guard added minutes earlier in this same wave.)
-  - `scene/save` raised the same panel on a never-saved scene with no way to avoid it. It now accepts an optional `path` (which doubles as Save-As, confined via `MCPAssetSafety`) and returns `requiresPath` instead of blocking when neither the scene nor the caller supplies one.
-- **`asset/create-prefab` got the missing overwrite guard** that `create-material` in the same file already had. Overwriting a prefab kept its `.meta` GUID, so every scene reference silently re-bound to the new asset.
-
-### Fixed — reliability
-- **The bridge no longer unregisters from the instance registry on domain reload.** It deleted its entry on every recompile — exactly the window the MCP server's compile-resilience logic depends on — which made a routine recompile look like the project had gone away and pushed the server onto another project's port.
-- **ProBuilder gate corrected to `5.1.0`.** `MakeUnique()` (used by the PB-safe duplicate) only exists from 5.1.0, but the versionDefine accepted 4.0.0+, so ProBuilder 4.x–5.0.x failed to compile the whole assembly — not a degraded feature, a dead plugin.
-- **License metadata corrected** — `package.json` declared `MIT` while the shipped LICENSE is the AnkleBreaker Open License v1.0 (attribution required, resale prohibited).
-
-## [2.39.3] - 2026-07-23
-
-### Fixed (Discord ProBuilder report — "shared-mesh hazards + 8 tool traps")
-- **A1 — `unity_gameobject_duplicate` is now ProBuilder-safe.** `Object.Instantiate` of a ProBuilder object made the clone's MeshFilter share the source's *runtime* mesh; deleting either object later ran `ProBuilderMesh.OnDestroy`, which destroys that mesh — blanking every copy at once (the report's "delete 3 chairs → 21 remaining chairs invisible"). Each cloned `ProBuilderMesh` is now given its own independent mesh via ProBuilder's `MakeUnique()`, so the duplicate is a fully independent, still-editable object. Live-verified: source and clone no longer share a mesh, and destroying the source leaves the clone's mesh intact (24 verts). Response reports `proBuilderMeshesIsolated`.
-- **A1 — `unity_gameobject_delete` guards the shared-mesh hazard.** Deleting an object whose runtime (non-asset) mesh is still referenced by MeshFilters outside its subtree (clones) is now refused with `requiresForce`/`sharedWith` instead of silently blanking the others; pass `force:true` to override. The external-sharer scan **includes inactive objects** (`FindObjectsInactive.Include`) — a toggled-off sibling was the one blind spot that would otherwise let the exact hazard through silently. Only runtime meshes are scanned, and only when the target actually has one, so normal asset-mesh deletes stay on the fast path. Live-verified with both active and inactive siblings; `force:true` deletes.
-- **B2 — material lookup is consistent and never fails silently.** `create_shape`'s `material` accepted a bare name but, when it didn't resolve, fell back to the default with `success:true` and no signal; `set_face_material` demanded a full asset path. Both now share one resolver that accepts a full path OR a bare name (exact AssetDatabase match). `create_shape` surfaces `materialWarning` + echoes `appliedMaterial` when a requested material can't be found, so the fallback is never silent. A bare name that matches **more than one** material (common with asset packs / generic names) is resolved deterministically and disclosed — `materialWarning` names the ambiguity and `appliedMaterialPath` echoes exactly which asset was applied — rather than silently picking an arbitrary one. This also resolves **B1** (combine "losing" per-piece materials): with real materials actually applied, `CombineMeshes.Combine` preserves the submeshes — the previous single-submesh result came from every piece silently sharing the default (live-reproduced: two cubes with distinct materials combine to 2 submeshes `[MAT_A, MAT_B]`).
-- **B3 — `bevel_edges` reports no-ops.** Bevel silently does nothing on some configurations (coplanar/interior faces left by a CSG cut); the response now includes `changed` (vertex/face-count delta) and a `note` when nothing moved.
-- **B5 — MeshCollider stays in sync after every rebuild.** A `MeshCollider` on a ProBuilder object kept stale cooked collision after combine/boolean/any edit; the shared rebuild path now re-points it (null-then-set forces a re-cook). Live-verified after an extrude (24→40 verts, collider matches).
-- **B8 — `create_shape` takes `layer`, `addCollider`, and `parent`.** Created objects landed on the Default layer, with no collider, at the scene root — forcing a follow-up call each time. All three are now applied at creation (layer by name or index; a MeshCollider matching the mesh; reparent by path), with `layerWarning`/`parentWarning` on an unknown layer/path. The response echoes `layer` and `hasCollider`.
-
-Inherent ProBuilder behavior, surfaced rather than "fixed": **B6** (a `set_face_material` submesh on a shared mesh doesn't sync sibling renderers — now mitigated by the A1 independent-mesh duplicate) and **B7** (structural ops renumber faces — re-enumerate before the next op). **C** (the five 2026-07-22 battle-test bugs) re-verified still fixed.
-
-## [2.39.2] - 2026-07-23
-
-### Security / Fixed (pre-merge multi-expert audit)
-- **CRITICAL — asmdef commands now confined to the project.** Every `asmdef/*` handler (`create`, `info`, `add-references`, `remove-references`, `set-platforms`, `update-settings`, `create-ref`) took the caller's raw `path` straight into `File.ReadAllText`/`WriteAllText` — the one asset-writing surface the data-safety wave hadn't retrofitted. A `../../` or absolute `path` could read/write outside the project. All seven now resolve through `MCPAssetSafety.TryResolveProjectPath` (traversal + absolute rejected); live-verified that `../../…/hosts` and `C:/Users/Public/evil.asmdef` are refused while a normal `Assets/…​.asmdef` create/info/reference still works.
-- **CRITICAL — legacy synchronous endpoint no longer self-deadlocks on deferred routes.** A direct (non-`queue/submit`) POST to a deferred route (`testing/list-tests`) blocked the editor for the full sync timeout (the main-thread pump can't drain while the same update tick is blocked). Such routes now return a clear 409 directing to `queue/submit`; the orphaned `ExecuteOnMainThreadDeferred` deadlock primitive is removed. The async queue path (what the server uses) is unaffected.
-- **`probuilder/combine` is now fully undoable** — it didn't record the surviving target before merging, so `undo/last`/Ctrl+Z restored the consumed sources but left the target merged (partial undo). Verified: after undo the target returns to its pre-merge face count AND the sources come back.
-- **Deferred tickets no longer open an undo group** — their collapse fires an arbitrary number of frames later and could fold a concurrent agent's undo group into theirs, corrupting per-action undo. Deferred actions (already excluded from history) now never open a group.
-- **`shadergraph/set-node-property` no longer reports success when it changed nothing** — a missing property now returns a clear error instead of `success:true` on an unchanged file; the value is written through a literal `MatchEvaluator` so a `$`/`$1` in the value can't splice in captured regex text.
-- **ProBuilder null-arg hardening** — explicit-JSON `null` for `name`/`material`/a `faceIndices` element now yields a clear validation error instead of a `NullReferenceException`; `execute-code` dictionary results are item-capped like lists; toolbar dot textures are freed before domain reload (no per-recompile native-texture leak); dead local removed from `translate-faces`.
-
-## [2.39.1] - 2026-07-23
-
-### Security (merge-readiness audit of the news feature)
-- **News feed links are now confined to http/https before reaching the OS shell.** `MCPNewsService` parsed the devlog RSS `<link>` and handed it verbatim to `Application.OpenURL` (which routes through the OS shell, i.e. any registered URI-scheme handler, `file://`, UNC paths). A spoofed/compromised feed could have turned one click in the News panel into a file/handler open. Links are now validated (`Uri` absolute + `http`/`https` only) at parse time — a bad-scheme item never becomes a clickable post — with a defense-in-depth re-check in `OpenPost`. Verified live: `file://`, `javascript:`, `steam://`, `ms-msdt:`, UNC and `vscode://` links are all dropped; a crafted `file://` item with a disguised `<color>` title is discarded while legit posts survive.
-- **Feed text can no longer inject UI markup.** Titles/categories are stripped of `<`/`>` (UI Toolkit labels render rich text by default) and `/` (a `GenericMenu` submenu separator) at parse; the dashboard news labels also set `enableRichText = false`. Prevents a compromised feed from styling an entry to impersonate official plugin UI.
-- **Bounded feed ingestion** — responses over 1 MB are rejected and at most 50 posts are parsed, so an oversized/malicious response can't drive unbounded allocation or a giant EditorPrefs write on the main thread.
-- **Seen-set integrity** — `;` (the EditorPrefs delimiter) is stripped from slugs so a crafted slug can't corrupt the read-state store.
-
-### Fixed
-- **Self-test resume after domain reload** — a mid-battery domain reload resumed via `EditorApplication.delayCall`, which can be dropped during `InitializeOnLoad`; it now resumes on the first `EditorApplication.update` (always fires). New **ProBuilder self-test probe** (creates/verifies/destroys a cube when ProBuilder is installed, passes through when absent).
-
-## [2.39.0] - 2026-07-22
-
-### Fixed (Discord battle-test report — "floats silently dropped + 4 more bugs")
-- **BUG 1 (MAJOR): non-integer numeric parameters were silently dropped on decimal-comma locales.** Root cause: handlers read numbers via `value.ToString()` (current culture: `18.8` → `"18,8"` on e.g. fr-FR) then parsed with InvariantCulture — fail → silent fallback to the default. Integers and strings were unaffected, which is why it looked like "floats rejected". New shared `MCPArgs` reads the boxed `double`/`long` MiniJson actually delivers **typed-first** (no string round-trip); ProBuilder's `GetFloat`/`GetInt`/`GetBool` and UMA's `GetOptionalFloat` now delegate to it. Reproduced and verified under a forced `fr-FR` culture; the reporter's exact case (a 1.4 × 0.72 × 0.7 cube) now applies verbatim, and float `translate_faces` genuinely moves vertices.
-- **Design rule from the report — no silent fallback, no silent success:** a parameter that is present but not interpretable now **throws a clear error** (`Parameter 'width' is not a valid number: 'abc'`) instead of defaulting, and `create-shape` echoes the **actually applied** `appliedSize`/`appliedPosition` so a dropped value is visible in the response.
-- **BUG 2 (create-shape "race"): same root cause as BUG 1** — the "lost" positions (12.8 / 15.2) were non-integer and got dropped; the queue serializes writes one per frame and `CreateShape` reads only its own arguments. Verified: 3 concurrent creates with float positions all land exactly where requested.
-- **BUG 3: `probuilder/info` bounds unreliable** — local mesh bounds are now recalculated before reporting (stale after vertex edits), and the response adds **`worldBounds`** (renderer AABB — reflects transform scale/rotation/position, which is what placement logic actually needs). Verified: a 2×-scaled cube reports local 1.4×0.97×0.7 and world 2.8×1.94×1.4.
-- **BUG 4: `probuilder/boolean` left both operands overlapping the result** — sources are now **deleted by default** (Undo-tracked, one undo restores everything); pass `deleteSources:false` to keep them. New `name` parameter for the result; the response reports `sourceInstanceIds` + `sourcesDeleted`.
-
-## [2.38.0] - 2026-07-19
-
-### Added (studio news notifications)
-- **Mobile-style devlog notifications** — the plugin now surfaces new posts from the AnkleBreaker devlog (`anklebreaker-studio.com/devlog`): the MCP toolbar element shows an unseen badge (`MCP ●1`; a real accent-orange badge pill on the pre-6000.3 fallback toolbar), the toolbar dropdown gains an **AnkleBreaker News** section (latest 5 posts, unseen marked, click opens + marks read, Mark All Read, Open Devlog Page), and the dashboard gains a full **News panel** (all posts with category chips + dates, unseen highlighted in the brand accent).
-- `MCPNewsService`: polls the devlog RSS feed at most every 6 hours (plain GET, nothing sent), caches posts across domain reloads, and tracks read state **per user** (global EditorPrefs — reading a post once clears it in every project). First run seeds the backlog as read except the newest post, so a fresh install shows a single gentle "1", not six. Fully opt-out via Settings → News Notifications (toolbar menu or dashboard).
-
-### Changed (dashboard reworked in UI Toolkit, studio branding)
-- **The dashboard (Window → AB Unity MCP) is rebuilt in UI Toolkit** on the AnkleBreaker theme — the deep warm-brown + molten-orange palette of the studio website, shared with the welcome window's brand stylesheet (new `MCPTheme` loads it cross-assembly + `MCPDashboardStyles.uss`). Every capability of the old IMGUI window is preserved: connection status, server controls, request queue with per-agent depth, project context management, active agent sessions, recent actions, feature categories with self-test status/details/toggles, settings (auto-start, manual port, MPPM, reset), version + update check.
-- Dynamic sections refresh on a 750 ms schedule but only rebuild when a content signature changes; each section refreshes in isolation (one failing data source can't blank the others) and self-heals if the layout-restore path stomps its content (first population is deferred one frame past Unity's view-data restore).
-
-## [2.37.1] - 2026-07-19
-
-### Fixed (found by the live ProBuilder level-build test scenario)
-- **ProBuilder shapes were created with a NULL material** — they rendered with the magenta missing-material look and crashed boolean CSG ("Value cannot be null. Parameter name: key", CSG keys a dictionary by material). `create-shape` now always ends with a real material (the explicit `material` arg, else ProBuilder's default), and `boolean` pre-flights both operands, assigning the default to any null slot (Undo-tracked, disclosed as `materialsDefaulted: true` in the result).
-- **`boolean` results were double-offset** — CSG output vertices are in world space, but the result object was also placed at the target's position, pushing the mesh a full offset away (a carved wall landed outside the level). The result now sits at the identity transform, then gets its pivot centered on the geometry so it behaves like a normal object for later transforms.
-- **`graphics/scene-capture` captured a stale camera** — a backgrounded editor never repaints the SceneView, so its camera lagged behind code-driven `LookAt`/focus changes and captures showed the old view. The render camera is now synced to the view's pivot/rotation/size before rendering, so captures always reflect the requested view.
-
-## [2.37.0] - 2026-07-19
-
-### Changed (context efficiency)
-- **`scene/hierarchy` is dense by default** — per-node fields carrying their default value are omitted, and an absent field means the default: `active` (true), `tag` (Untagged), `layer` (Default), `position` (origin; Unity's approximate `Vector3 ==` treats float noise as origin), the universal `Transform` component entry, and `childCount` when a complete `children` array already implies it. Non-default information is always emitted. Measured **43% smaller** on a representative 221-node hierarchy (42.3KB → 24.4KB); scenes with many empty organizer objects cut more. **Behavior change:** consumers that require the old always-present per-node shape pass `verbose:true` (the server companion 2.35.0 declares the parameter).
-
-## [2.36.0] - 2026-07-18
-
-### Added (per-action / per-agent Undo)
-- **`undo/last` — revert the most recent undoable MCP action as a whole.** Each write action now reverts cleanly as one step (a whole create/edit/boolean, not one internal operation). With `agentId`, targets that agent's most recent action. Honest about Unity's LINEAR undo: if newer actions are stacked on top of the target, `undo/last` refuses to cascade and lists exactly which actions would also be reverted unless `force:true` is passed.
-- **`undo/history` is now a real per-agent action log** — returns recent MCP actions (newest first, optional `agentId`/`count` filters) with per-agent attribution, target object, an `undoable` flag, and the current Unity undo group — instead of only the current group name.
-
-### Changed (multi-agent queue — each action is now independently revertable)
-- **The queue wraps every WRITE action in its own named, collapsed Undo group** (`MCPRequestQueue`). Previously the recorded undo group used a `GetCurrentGroup()` before/after diff that missed most real edits (e.g. `RegisterCreatedObjectUndo` doesn't advance the group), so per-action undo was effectively unavailable. Now each agent's action is a clean, named entry in Unity's Undo history and a precise revert target for `undo/last`.
-- **Undoability is detected from the actual undo stack**, not guessed: an action is only marked undoable if it genuinely registered an undo op (measured via the internal `Undo.GetRecords`), so reads that slip past the read classifier — and `execute-code`, whose temp-host churn registers incidental undo — never become misleading `undo/last` targets. Reads, undo/redo ops, empty groups and failures stay non-undoable. Fails open if the internal API is ever unavailable.
-
-## [2.35.0] - 2026-07-18
-
-### Added (ProBuilder integration — `com.unity.probuilder`)
-- **Full ProBuilder command surface** (`MCPProBuilderCommands`, 14 handlers under the `probuilder/*` routes) — create parametric shapes and edit real, still-editable ProBuilder meshes through ProBuilder's public API:
-  - `create-shape` — cube, plane, cylinder, prism, stair, cone, door, pipe, arch, sphere (icosphere), torus, with per-shape parameters (sides, steps, thickness, angle, subdivisions, …).
-  - Geometry edits — `extrude-faces` (face/individual/vertex-normal), `bevel-edges`, `subdivide`, `delete-faces`, `translate-faces`, `flip-normals`.
-  - Materials — `set-face-material` (per-face submesh assignment).
-  - Boolean CSG — `boolean` (union / subtract / intersect); the result is a new editable ProBuilder object.
-  - `combine` (merge ProBuilder meshes), `probuilderize` (convert a plain mesh to ProBuilder), `center-pivot`, `export-mesh` (bake to a `.asset`, guarded by the shared overwrite check).
-- **Tolerated-when-missing integration** — the whole surface is gated on `PROBUILDER_INSTALLED` (asmdef `versionDefines` on `com.unity.probuilder >= 4.0.0`); when ProBuilder is absent every handler returns a clear "not installed" message instead of failing to compile, matching the existing UMA pattern. New `probuilder` capability category in `MCPSettingsManager`.
-- Every mutation registers Undo (`Undo.RegisterCompleteObjectUndo` / `RegisterCreatedObjectUndo`), so ProBuilder edits compose with the multi-agent queue's per-action undo tracking. `export-mesh` uses `outputPath` (distinct from the `path`/`instanceId` used to resolve the source object) and confines writes under `Assets/` via `MCPAssetSafety`.
-
-## [2.34.0] - 2026-07-18
-
-### Fixed (data safety — several handlers could silently destroy user assets)
-- **`script/create` and `script/update` no longer write outside the project or destroy source files** — the project root was computed with `dataPath.Replace("/Assets","")`, which strips **every** `/Assets` occurrence, so a project under a path containing `/Assets` resolved to the wrong root and writes landed outside the project (the import then silently no-oped). Root is now `Path.GetDirectoryName(Application.dataPath)`. `update` with missing **or empty** content used to truncate the target script to zero bytes — empty content is now rejected. `create` no longer silently overwrites an existing script. All paths are canonicalized and confined under `Assets/`/`Packages/` (traversal and absolute-path escapes rejected).
-- **Asset creators no longer silently overwrite existing assets** — `AssetDatabase.CreateAsset` on an existing path destroys the asset and every reference to it (the GUID is reused). ScriptableObject, Terrain (`create`), Animator Controller, Animation Clip, Material, and `asset/import` now refuse to replace an existing asset unless `overwrite: true` is passed. The overwrite check tests the canonical on-disk path **and** the AssetDatabase, so a non-canonical spelling (`Assets//X`, `Assets/./X`) or a not-yet-imported file can't slip past it. New shared `MCPAssetSafety` helper centralizes root resolution, path confinement, and the overwrite guard.
-- **Queue double-execution** — a request whose 30s sync waiter already gave up (`TimedOut`) stayed in the queue and still executed later, so a client retry ran a non-idempotent action (create, package add, import) twice. Timed-out tickets are now dropped before execution (race-safe under the queue lock).
-- **`component/set-property` reported success without applying the value** — Color/Vector2/3/4/Rect branches silently did nothing when the value wasn't an object (e.g. an agent passing `"1,0,0,1"` or an array); they now return a clear error.
-- **`asmdef` remove-references removed the wrong reference** — a substring `Contains` match removed `Unity.InputSystem.ForUI` when asked to remove `Unity.InputSystem` (breaking compilation while reporting success); now an exact name/GUID match, and a no-match is reported rather than churning a recompile.
-
-### Fixed (ShaderGraph — all four asset-corruption bugs in [#18](https://github.com/AnkleBreaker-Studio/unity-mcp-plugin/issues/18))
-- ShaderGraph create/add-node/connect/disconnect/remove-node now go through ShaderGraph's real `GraphData` model (new `MCPShaderGraphApi` reflection wrapper over `GraphData` / `MultiJson` / `FileUtilities`) instead of regex/JSON string surgery, so the serialized `.shadergraph` is **always** a valid, importable asset:
-  - `create` built an identical invalid 809-byte graph for every template (no target, dangling `m_OutputNode`, failed import); it now builds a real URP Lit/Unlit graph with its default surface/vertex blocks (or a valid target-less graph for `blank`), and refuses to silently downgrade an explicit URP template to blank when URP isn't installed.
-  - `add-node` produced empty-slot nodes that broke import and dropped the requested position; nodes now get their real slots and the position is honored (`positionX`/`positionY` or `x`/`y`).
-  - `disconnect` matched by output slot only (dropping sibling edges) and blanked surviving multi-line edges to `m_Id:""`; it now removes exactly the tuple-matched edges, survivors untouched.
-  - `remove-node` had the same edge-blanking corruption; it now uses `GraphData.RemoveNode`.
-  - `connect` validates slot compatibility and refuses cycles instead of blindly inserting edge JSON.
-  - Fail-closed: if the ShaderGraph API can't be resolved (version drift), these handlers return a clear error instead of corrupting anything.
-
-### Changed
-- **`overwrite: true` opt-in** on the asset-creator handlers is the escape hatch for the new overwrite guards (see the companion `unity-mcp-server` 2.32.0 schema additions). `editor/state` and `project/info` now report the project path via the corrected root helper.
-
-## [2.33.0] - 2026-07-18
-
-### Fixed
-- **`/api/context` always returned HTTP 500** — `GetContextResponse` reads `EditorPrefs` (main-thread-only) but ran on the HTTP ThreadPool thread, so every Project Context call threw; both context routes now run through `ExecuteOnMainThread` like every other synchronous route. Root cause + fix per PR [#17](https://github.com/AnkleBreaker-Studio/unity-mcp-plugin/pull/17) by @rcasaleiro.
-- **`GetRegisteredRoutes` drift** — the hand-maintained route list had drifted to ~150 of 321 routes with several wrong names (e.g. `editor/undo` vs the real `undo/perform`), silently breaking the server's dynamic tool discovery. The list is now **generated from the dispatch switch** into `MCPBridgeServer.Routes.g.cs` by `tools~/generate-routes.mjs`; a CI workflow fails on drift.
-- **`editor/execute-code` returned numbers as strings** — result serialization ToString'd every reflected property and list element (`42` became `"42"`, nested objects flattened to type names). New depth-capped recursive serializer preserves primitive types, recurses dicts/lists/anonymous objects (depth 4, 1000-item cap), and renders `UnityEngine.Object` graphs compactly instead of exploding their property trees.
-- **Action history truncated 64-bit ids** — `MCPActionRecord.TargetInstanceId` was `int` but Unity 6.5 EntityIds are 64-bit opaque strings; the field is now a string end to end (record, persistence DTO, history window, select-target). Old persisted entries lose only this field on first load.
-- **Error responses leaked exception stack traces to the wire** — traces now go to the editor log only.
-- **macOS: ExecuteCode could not find Roslyn** — added `Contents/Resources/Scripting` to the assembly search paths, per PR [#19](https://github.com/AnkleBreaker-Studio/unity-mcp-plugin/pull/19) by @JetNik.
-
-### Added
-- **Browser CSRF / DNS-rebinding guard** — the bridge can execute arbitrary editor code but accepted any local HTTP request; requests with a non-loopback `Host` or any non-loopback `Origin` (browser pages always attach one on cross-origin fetches) are now rejected with 403 before touching editor state. Local tools (no Origin header) are unaffected.
-- **Capability handshake (plugin half)** — `/api/ping` advertises a monotonic `protocolVersion` (1) and `pluginVersion` (from PackageInfo); unknown routes return HTTP 404 on the legacy path so servers can distinguish "feature missing" from "call failed" and degrade gracefully across version drift. Pairs with `unity-mcp-server` 2.31.0. Re-implementation of PR [#20](https://github.com/AnkleBreaker-Studio/unity-mcp-plugin/pull/20) by @D3vCrow.
-
-## [2.32.0] - 2026-06-02
-
-### Added
-- **`screenshot/editor-window` command** — `MCPScreenshotCommands.CaptureEditorWindow` captures any EditorWindow (Inspector, Project, Console, custom windows) to a PNG via the Win32 `PrintWindow` API (`PW_RENDERFULLCONTENT`), occlusion-proof (the window renders itself offscreen — no raise or focus-steal). Docked windows are captured by PrintWindowing the main window and cropping the panel rect; floating windows by resolving their own HWND (exact title match) and capturing the whole window. Defaults to `Assets/Screenshots/`, honours any user-chosen `.png` path; bounds dimensions against `SystemInfo.maxTextureSize`, all GDI handles + the `Texture2D` released in `try/finally`. **Windows editor only** (`#if UNITY_EDITOR_WIN`) — returns a clear unsupported-platform error on macOS/Linux (no `PrintWindow` equivalent); use `screenshot/scene` / `screenshot/game` (camera-based) there. Companion to the `unity-mcp-server` 2.30.0 change.
-
-### Changed
-- **Welcome window reworked into a modular, themed system** — the single-file `Editor/MCPWelcomeWindow.cs` is replaced by `1-Scripts/Editor/WelcomeWindow/` (own assembly `UnityMCP.Editor.Welcome`, namespace `UnityMCP.Editor.Welcome`): a USS theme, Welcome + Studio tabs, auto-open on first load with per-project detection, a config-driven content seam (custom sections / buttons, cross-sell entries via `welcome.gen.json`), a devlog fetcher, and bundled icons.
-
-## [2.31.2] - 2026-05-21
-
-### Changed
-- **Settings panel grouped into labelled sections** — the Dashboard's *Settings* foldout now has three bold sub-headers (**General**, **Port**, **Multiplayer Play Mode (MPPM)**) instead of an unlabelled flat list. The *Start on Virtual Players* toggle is now under the explicit **MPPM** header so its scope is clear, and it was moved below the Port settings. UI-only change, no behaviour difference.
-
-## [2.31.1] - 2026-05-21
-
-### Fixed
-- **MPPM scenario commands now work on MPPM 2.0 (Unity 6)** — the 2.31.0 Unity 6 port resolved the scenario types under the wrong names. In MPPM 2.0 the scenario "config" ScriptableObject was renamed `OrchestratedScenario` (from `ScenarioConfig`) and the status struct `ScenarioStatusData` (from `ScenarioStatus`); `MCPScenarioCommands` now resolves both. `create_scenario` no longer requires the removed `RemoteInstanceDescription` type (remote instances were dropped in MPPM 2.0), and `list_scenarios` reads instance counts from `OrchestratedScenario`'s fields. All MPPM tools verified end-to-end on Unity 6000.5.0b8 + MPPM 2.0.2.
-
-## [2.31.0] - 2026-05-21
-
-### Added
-- **MPPM Virtual Player management** — new commands `mppm/list-players`, `mppm/activate-player`, `mppm/deactivate-player` to list and activate/deactivate Multiplayer Play Mode virtual players by 1-based index.
-- **`scenario/create`** — create an MPPM `ScenarioConfig` asset programmatically (one Main Editor instance + N Virtual Editor instances with configurable Host/Client/Server roles).
-
-### Changed
-- **MPPM scenario commands now work on Unity 6** — `MCPScenarioCommands` resolves the MPPM scenario types from both the legacy package assembly (`Unity.Multiplayer.PlayMode.Scenarios.Editor`, pre-Unity-6) and the built-in `UnityEditor.MultiplayerModule` introduced in Unity 6; previously all `mppm/*` commands returned "MPPM is not installed" on Unity 6. `scenario/start` / `scenario/stop` also enter/exit Play mode so virtual-player launch hooks fire.
-
-## [2.30.0] - 2026-05-21
-
-### Changed
-- **MCP settings are now scoped per project / per instance** — `EditorPrefs` is global to the machine, so settings were previously shared across every Unity project and instance (e.g. one project's manual port leaked to all others). `MCPSettingsManager` now namespaces keys into two tiers: **instance-scoped** (`Port`, `UseManualPort`, `AutoStart` — keyed by project path, unique per main Editor / ParrelSync clone / MPPM virtual player) and **project-scoped** (`StartOnVirtualPlayers`, project context, action-history and category settings — keyed by `PlayerSettings.productGUID`, shared by a project and its clones / virtual players). Existing settings are migrated to the new keys automatically on first load.
-
-## [2.29.1] - 2026-05-21
-
-### Fixed
-- **MPPM Virtual Player detection on Unity 6** — `MCPScenarioCommands.IsVirtualPlayer()` (the gate behind the 2.29.0 "Start on Virtual Players" setting) only resolved the pre-Unity-6 type `Unity.Multiplayer.Playmode.CurrentPlayer`. On Unity 6 that API moved to `Unity.Multiplayer.PlayMode.CurrentPlayer` in the built-in `UnityEngine.MultiplayerModule`, so detection always returned false and the gate never engaged. It now resolves both locations (Unity 6 first, pre-6 fallback). Verified live on Unity 6000.5 with MPPM.
-
-## [2.29.0] - 2026-05-21
-
-### Added
-- **"Start on Virtual Players" setting** — new MCP settings toggle controlling whether the bridge auto-starts on Multiplayer Play Mode (MPPM) virtual players. Previously every virtual player launched its own MCP bridge, which is usually unwanted noise. Default is **on** (behaviour unchanged); turn it off so only the main Editor runs a bridge. Virtual players are detected via `Unity.Multiplayer.Playmode.CurrentPlayer.IsMainEditor`; manual start on a virtual player still works. Addresses [unity-mcp-server#21](https://github.com/AnkleBreaker-Studio/unity-mcp-server/issues/21).
-
-## [2.28.1] - 2026-05-21
-
-### Fixed
-- **Manual (fixed) port not reclaimed after a domain reload** — with a manual port configured, `MCPBridgeServer.Start()` bound the port directly and gave up permanently on the first failure. Right after a domain reload the port can be briefly unbindable while the previous listener's socket is released; auto-port mode already survived this (it probes and falls back) but manual mode had neither probe nor retry. `Start()` now retries the same manual port up to 10 times on a 0.5s delay before giving up. Addresses [unity-mcp-server#10](https://github.com/AnkleBreaker-Studio/unity-mcp-server/issues/10).
-
-## [2.28.0] - 2026-05-21
-
-### Added
-- **Unity 6.5 (6000.5) compatibility** — The plugin compiles and runs on Unity 6.5. The InstanceID APIs deprecated as compile errors in 6.5 (`Object.GetInstanceID`, `EditorUtility.InstanceIDToObject`, `SerializedProperty.objectReferenceInstanceIDValue`, `AssetPreview.IsLoadingAssetPreview(int)`) are now routed through a version-gated `MCPObjectId` shim — it uses `EntityId` with `EntityId.ToULong`/`FromULong` on 6.5 and the classic APIs on 2021.3–6.4. Fixes [#14](https://github.com/AnkleBreaker-Studio/unity-mcp-plugin/issues/14) and [unity-mcp-server#24](https://github.com/AnkleBreaker-Studio/unity-mcp-server/issues/24).
-
-### Changed
-- **`instanceId` is now a string** — Unity 6.5 entity ids are 64-bit values that exceed JavaScript's safe-integer range (2^53), so as JSON numbers they were rounded crossing the Node MCP server and object-by-`instanceId` resolution failed. The JSON `instanceId` field is now a decimal string on every Unity version (opaque, lossless). Requires `unity-mcp-server` ≥ 2.28.3.
-
-## [2.27.2] - 2026-05-21
-
-### Fixed
-- **Roslyn assemblies not found on macOS** — `MCPEditorCommands.TryLoadRoslyn()` assumed the Windows/Linux `Data/` editor layout; on macOS the assemblies live inside `Unity.app/Contents/`, so `unity_execute_code` always failed with "Roslyn is not available". The lookup now detects the `.app` bundle and adds `Unity.app/Contents` as a data root, plus `Tools/ScriptUpdater`. Contributed by [@dougfy](https://github.com/dougfy) in [#13](https://github.com/AnkleBreaker-Studio/unity-mcp-plugin/pull/13).
-
-## [2.27.1] - 2026-05-21
-
-### Fixed
-- **UPM install compile failure (`CS0103` cascade)** — `MCPPrefsCommands`, `MCPConstraintCommands` and `MCPProfilerCommands` shipped `.cs.meta` files with hand-typed placeholder GUIDs. Under a UPM git install (`Library/PackageCache/`), Unity 6 silently skipped indexing those scripts, cascading into `CS0103` errors. The three GUIDs were regenerated with proper random values. Fixes [#11](https://github.com/AnkleBreaker-Studio/unity-mcp-plugin/issues/11). Contributed by [@BadranRaza](https://github.com/BadranRaza) in [#12](https://github.com/AnkleBreaker-Studio/unity-mcp-plugin/pull/12).
-
-## [2.27.0] - 2026-04-22
-
-### Fixed
-- **Path-based lookup for inactive GameObjects** — `MCPGameObjectCommands.FindGameObject` now passes `FindObjectsInactive.Include` to `FindObjectsByType<GameObject>`. Every tool routed through path-based lookup (`prefab_info`, `set_active`, `info`, `delete`, `set_transform`, `reparent`, etc.) now works correctly on inactive GameObjects, whereas they previously failed with "GameObject not found". Fixes [unity-mcp-server#16](https://github.com/AnkleBreaker-Studio/unity-mcp-server/issues/16). Contributed by [@BadranRaza](https://github.com/BadranRaza) in [#8](https://github.com/AnkleBreaker-Studio/unity-mcp-plugin/pull/8).
-- **Prefab-instance detection on scene instances** — `MCPPrefabCommands.GetPrefabInfo` now uses `PrefabUtility.IsPartOfPrefabInstance` instead of `PrefabUtility.GetPrefabInstanceStatus == NotAPrefab`. This eliminates known false-negative cases (non-root children, instances with missing nested assets) where scene GameObjects that are valid prefab instances were reported as "not a prefab instance". Contributed by [@BadranRaza](https://github.com/BadranRaza) in [#8](https://github.com/AnkleBreaker-Studio/unity-mcp-plugin/pull/8).
-- **Bridge server started in AssetImportWorker subprocesses** — Unity spawns batch-mode `AssetImportWorker` subprocesses for parallel asset import, and these were running the plugin's `[InitializeOnLoad]` constructor and claiming ports in the 7890-7899 range on top of the main Editor. A single user with a few projects open could easily exhaust the range, blocking legitimate editor instances. `MCPBridgeServer` now early-returns when `Application.isBatchMode` is true.
-- **Infinite retry loop on port exhaustion** — When no port was available, `MCPInstanceRegistry.FindAvailablePort()` returned `PortRangeStart` (7890) by default; `MCPBridgeServer.Start()` then retried via `EditorApplication.delayCall`, hit the same default, and looped forever, spamming `Failed to start on port 7890`. `FindAvailablePort()` now returns `-1` when nothing is free, and `Start()` gives up cleanly. Fixes [unity-mcp-server#10](https://github.com/AnkleBreaker-Studio/unity-mcp-server/issues/10).
-
-### Changed
-- **Declared minimum Unity version corrected** — `unityRelease` bumped from `0f1` to `18f1`. The plugin has been using `Object.FindObjectsByType` (introduced in Unity 2021.3.18) for several releases, so the declared minimum was inaccurate. No effective support window change.
-
-## [2.26.0] - 2026-04-02
-
-### Added
-- **SpriteAtlas management** — 7 new HTTP endpoints for Unity SpriteAtlas workflow (contributed by [@zaferdace](https://github.com/zaferdace)):
-  - `spriteatlas/create` — Create a new SpriteAtlas asset
-  - `spriteatlas/info` — Get SpriteAtlas details (packed sprites, packing/texture settings)
-  - `spriteatlas/add` — Add sprites or folders to a SpriteAtlas
-  - `spriteatlas/remove` — Remove entries from a SpriteAtlas
-  - `spriteatlas/settings` — Configure packing, texture, and platform-specific settings
-  - `spriteatlas/delete` — Delete a SpriteAtlas asset
-  - `spriteatlas/list` — List all SpriteAtlases in the project
-- New `MCPSpriteAtlasCommands.cs` — Dedicated SpriteAtlas command handler
-- **Self-test system overhaul** — Probes for all 43 command modules (18 new categories), robust test runner with domain reload resume and timeout handling
-
-### Fixed
-- **Unity 2023+ / Unity 6 compatibility** — Resolved 43 `CS0618` deprecation warnings across the codebase
-- **Self-test conditional compilation** — UMA probe wrapped in `#if UMA_INSTALLED`, Scenario probe handles missing MPPM package gracefully
-
-## [2.25.0] - 2026-03-25
-
-### Added
-- **UMA (Unity Multipurpose Avatar) integration** — 13 new HTTP endpoints for the complete UMA asset pipeline:
-  - `uma/inspect-fbx` — Inspect FBX meshes for UMA compatibility
-  - `uma/create-slot` — Create SlotDataAsset from mesh data
-  - `uma/create-overlay` — Create OverlayDataAsset with texture assignments
-  - `uma/create-wardrobe-recipe` — Create WardrobeRecipe combining slots and overlays
-  - `uma/create-wardrobe-from-fbx` — Atomic FBX-to-wardrobe pipeline (inspect → slot → overlay → recipe in one call)
-  - `uma/wardrobe-equip` — Equip/unequip wardrobe items on DynamicCharacterAvatar
-  - `uma/list-global-library` — Browse the UMA Global Library contents
-  - `uma/list-wardrobe-slots` — List available wardrobe slots
-  - `uma/list-uma-materials` — List UMA-compatible materials
-  - `uma/get-project-config` — Get UMA project configuration
-  - `uma/verify-recipe` — Validate a WardrobeRecipe for missing references
-  - `uma/rebuild-global-library` — Force rebuild the Global Library index
-  - `uma/register-assets` — Register Slot/Overlay/Recipe assets in the Global Library
-- New `MCPUMACommands.cs` — Dedicated UMA command handler with conditional compilation (`UMA_INSTALLED`)
-- UMA routes wired into `MCPBridgeServer.cs`
-
-## [2.24.0] - 2026-03-25
-
-### Added
-- **Unity Test Runner integration** — Run and manage tests directly from AI assistants
-  - `testing/run-tests` — Start EditMode/PlayMode test runs, returns job ID for async polling
-  - `testing/get-job` — Poll test job status and results (passed/failed/skipped counts, duration)
-  - `testing/list-tests` — Discover available tests with names, categories, and run state
-  - Async job-based pattern with deferred execution on Unity main thread
-  - Supports filtering by test name, category, assembly, or group
-- **Compilation error tracking via CompilationPipeline** — Dedicated error buffer independent of console log
-  - `CompilationPipeline.assemblyCompilationFinished` captures errors/warnings per assembly
-  - `CompilationPipeline.compilationStarted` auto-clears buffer on new compilation cycle
-  - Thread-safe with lock-based synchronization
-  - Not affected by console `Clear()` or Play Mode log flooding
-  - Returns file, line, column, message, severity, assembly, and timestamp
-  - Supports filtering by severity (`error`, `warning`, `all`) and count limit
-  - Includes `isCompiling` flag in response
-- **HTTP route `compilation/errors`** — New endpoint on the bridge server for the MCP server's `unity_get_compilation_errors` tool
-
-### Fixed
-- **Unity 2021.3 LTS compilation compatibility** — Replaced `string.Contains(string, StringComparison)` with `IndexOf` for .NET Standard 2.0 compatibility
-- **Operator precedence bug** — Fixed `!IndexOf >= 0` (CS0023) to `IndexOf < 0` in test name filtering
-
-## [2.9.1] - 2026-02-26
-
-### Changed
-- **MCP connector renamed to `unity-mcp`** for better Cowork discovery (technical name only)
-  - AnkleBreaker branding preserved in all user-facing UI (menu, dashboard, logs, tooltips)
-  - Menu item remains: `Window > AB Unity MCP`
-  - Log prefix remains: `[AB-UMCP]`
-- Updated README with clear two-part installation instructions and Cowork setup guide
-- Added Project Context to dashboard documentation
-
-## [2.9.0] - 2026-02-26
-
-### Added
-- Project Context System — auto-inject project documentation to AI agents
-- MCPContextManager for file discovery and template generation
-- Context endpoints on HTTP bridge (direct read-only, bypasses queue)
-- Context UI foldout in dashboard window
-
-## [2.8.0] - 2026-02-25
-
-### Added
-- Multi-agent async request queue with fair round-robin scheduling
-- Agent session tracking and action logging
-- Read batching (up to 5/frame) and write serialization (1/frame)
-- Queue management API endpoints
-- Dashboard with live queue monitoring and agent sessions
-- Self-test system for verifying all 21 categories
-- Toolbar status element with server controls
-
-## [1.0.0] - 2026-02-25
-
-### Added
-- Initial release
-- HTTP bridge server on localhost:7890
-- Scene management (open, save, create, hierarchy)
-- GameObject operations (create, delete, inspect, transform)
-- Component management (add, remove, get/set properties)
-- Asset management (list, import, delete, prefabs, materials)
-- Script operations (create, read, update)
-- Build system (multi-platform builds)
-- Console log access
-- Play mode control
-- Editor state monitoring
-- Project info retrieval
-- Menu item execution
-- MiniJson serializer (zero dependencies)
