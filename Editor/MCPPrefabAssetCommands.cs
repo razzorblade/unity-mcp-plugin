@@ -25,6 +25,8 @@ namespace UnityMCP.Editor
                 return new { error = "assetPath is required" };
 
             int maxDepth = args.ContainsKey("maxDepth") ? Convert.ToInt32(args["maxDepth"]) : 10;
+            int maxNodes = Math.Max(1, MCPArgs.GetInt(args, "maxNodes", 5000));
+            bool verbose = MCPWire.IsVerbose(args);
 
             var root = PrefabUtility.LoadPrefabContents(assetPath);
             if (root == null)
@@ -32,13 +34,21 @@ namespace UnityMCP.Editor
 
             try
             {
-                var hierarchy = BuildHierarchyNode(root, 0, maxDepth);
-                return new Dictionary<string, object>
+                int nodeCount = 0;
+                var hierarchy = BuildHierarchyNode(root, 0, maxDepth, ref nodeCount, maxNodes, verbose);
+                var result = new Dictionary<string, object>
                 {
                     { "prefab", root.name },
                     { "assetPath", assetPath },
                     { "hierarchy", hierarchy },
+                    { "returnedNodes", nodeCount },
                 };
+                if (nodeCount >= maxNodes)
+                {
+                    result["truncated"] = true;
+                    result["message"] = $"Hierarchy truncated at {maxNodes} nodes. Increase maxNodes or lower maxDepth.";
+                }
+                return result;
             }
             finally
             {
@@ -80,33 +90,19 @@ namespace UnityMCP.Editor
                 if (component == null)
                     return new { error = $"Component '{componentType}' not found on '{go.name}'" };
 
-                var serialized = new SerializedObject(component);
-                var properties = new List<Dictionary<string, object>>();
+                string propertyPath = GetString(args, "propertyPath");
+                var read = MCPPropertyReader.FromArgs(args).Read(new SerializedObject(component), propertyPath, skipScript: false);
+                if (read.ContainsKey("error")) return read;
 
-                var iterator = serialized.GetIterator();
-                if (iterator.NextVisible(true))
-                {
-                    do
-                    {
-                        properties.Add(new Dictionary<string, object>
-                        {
-                            { "name", iterator.name },
-                            { "displayName", iterator.displayName },
-                            { "type", iterator.propertyType.ToString() },
-                            { "value", MCPComponentCommands.GetSerializedValue(iterator) },
-                            { "editable", iterator.editable },
-                        });
-                    } while (iterator.NextVisible(false));
-                }
-
-                return new Dictionary<string, object>
+                var result = new Dictionary<string, object>
                 {
                     { "prefab", root.name },
                     { "gameObject", go.name },
                     { "prefabPath", prefabPath ?? "" },
                     { "component", componentType },
-                    { "properties", properties },
                 };
+                foreach (var kv in read) result[kv.Key] = kv.Value;
+                return result;
             }
             finally
             {
@@ -1083,43 +1079,54 @@ namespace UnityMCP.Editor
             return current.gameObject;
         }
 
-        private static Dictionary<string, object> BuildHierarchyNode(GameObject go, int depth, int maxDepth)
+        /// <summary>
+        /// Dense by default, like scene/hierarchy: fields at their default value (active, Untagged,
+        /// Default layer, Transform component, identity local transform) are omitted and vectors are
+        /// arrays. verbose:true restores the always-present shape.
+        /// </summary>
+        private static Dictionary<string, object> BuildHierarchyNode(
+            GameObject go, int depth, int maxDepth, ref int nodeCount, int maxNodes, bool verbose)
         {
+            nodeCount++;
+
             var components = new List<string>();
             foreach (var comp in go.GetComponents<Component>())
             {
-                if (comp != null)
-                    components.Add(comp.GetType().Name);
+                if (comp == null) continue;
+                string typeName = comp.GetType().Name;
+                if (!verbose && typeName == "Transform") continue;
+                components.Add(typeName);
             }
 
-            var node = new Dictionary<string, object>
-            {
-                { "name", go.name },
-                { "active", go.activeSelf },
-                { "tag", go.tag },
-                { "layer", LayerMask.LayerToName(go.layer) },
-                { "components", components },
-                { "localPosition", VectorToDict(go.transform.localPosition) },
-                { "localRotation", VectorToDict(go.transform.localEulerAngles) },
-                { "localScale", VectorToDict(go.transform.localScale) },
-            };
+            var t = go.transform;
+            var node = new Dictionary<string, object> { { "name", go.name } };
+            if (verbose || !go.activeSelf) node["active"] = go.activeSelf;
+            if (verbose || !go.CompareTag("Untagged")) node["tag"] = go.tag;
+            if (verbose || go.layer != 0) node["layer"] = LayerMask.LayerToName(go.layer);
+            if (verbose || components.Count > 0) node["components"] = components;
+            // Vector3/Quaternion == compare approximately, so float noise still reads as default.
+            if (verbose || t.localPosition != Vector3.zero) node["localPosition"] = MCPWire.Vec(t.localPosition, verbose);
+            if (verbose || t.localRotation != Quaternion.identity) node["localRotation"] = MCPWire.Vec(t.localEulerAngles, verbose);
+            if (verbose || t.localScale != Vector3.one) node["localScale"] = MCPWire.Vec(t.localScale, verbose);
 
-            if (depth < maxDepth && go.transform.childCount > 0)
+            int childCount = t.childCount;
+            if (childCount == 0) return node;
+
+            if (depth < maxDepth)
             {
                 var children = new List<object>();
-                for (int i = 0; i < go.transform.childCount; i++)
-                {
-                    children.Add(BuildHierarchyNode(go.transform.GetChild(i).gameObject, depth + 1, maxDepth));
-                }
-                node["children"] = children;
-                node["childCount"] = go.transform.childCount;
+                for (int i = 0; i < childCount && nodeCount < maxNodes; i++)
+                    children.Add(BuildHierarchyNode(t.GetChild(i).gameObject, depth + 1, maxDepth, ref nodeCount, maxNodes, verbose));
+                if (children.Count > 0) node["children"] = children;
+                // A complete children array implies childCount.
+                if (verbose || children.Count != childCount) node["childCount"] = childCount;
+                if (children.Count != childCount) node["childrenTruncated"] = true;
             }
-            else if (go.transform.childCount > 0)
+            else
             {
-                node["childCount"] = go.transform.childCount;
+                node["childCount"] = childCount;
                 node["childrenTruncated"] = true;
             }
-
             return node;
         }
 
@@ -1128,22 +1135,7 @@ namespace UnityMCP.Editor
             return args != null && args.ContainsKey(key) ? args[key]?.ToString() : "";
         }
 
-        private static Dictionary<string, object> VectorToDict(Vector3 v)
-        {
-            return new Dictionary<string, object> { { "x", v.x }, { "y", v.y }, { "z", v.z } };
-        }
-
-        private static Vector3 ParseVector3(object value)
-        {
-            if (value is Dictionary<string, object> d)
-            {
-                return new Vector3(
-                    d.ContainsKey("x") ? Convert.ToSingle(d["x"]) : 0f,
-                    d.ContainsKey("y") ? Convert.ToSingle(d["y"]) : 0f,
-                    d.ContainsKey("z") ? Convert.ToSingle(d["z"]) : 0f
-                );
-            }
-            return Vector3.zero;
-        }
+        /// <summary>Accepts {x,y,z} or [x,y,z]; any other present value fails loudly (it was silently zero).</summary>
+        private static Vector3 ParseVector3(object value) => MCPArgs.ToVector3(value, "vector");
     }
 }

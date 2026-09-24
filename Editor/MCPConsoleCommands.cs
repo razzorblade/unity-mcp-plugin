@@ -125,51 +125,97 @@ namespace UnityMCP.Editor
             }
         }
 
+        /// <summary>
+        /// Most recent console entries (chronological). By default identical entries — same type,
+        /// message and stack trace — are collapsed like the Console window's Collapse toggle:
+        /// one entry with <c>repeats</c> (when &gt; 1), its latest <c>timestamp</c> and its
+        /// <c>firstTimestamp</c>. <c>count</c> then bounds the number of DISTINCT entries, so one
+        /// error spamming every frame can no longer crowd every other message out of the window.
+        /// collapse:false (or verbose:true) returns one entry per log call, as before.
+        /// </summary>
         public static object GetLog(Dictionary<string, object> args)
         {
             EnsureListening();
 
             int count = args.ContainsKey("count") ? Convert.ToInt32(args["count"]) : 50;
             string typeFilter = args.ContainsKey("type") ? args["type"].ToString().ToLower() : "all";
+            bool verbose = MCPWire.IsVerbose(args);
+            bool collapse = !verbose && MCPArgs.GetBool(args, "collapse", true);
 
             var entries = new List<Dictionary<string, object>>();
+            var byKey = collapse ? new Dictionary<(LogType, string, string), Dictionary<string, object>>() : null;
+            int scanned = 0;
             lock (_logEntries)
             {
-                // Walk backwards through all entries, collecting matches until we have enough.
-                // This ensures we get the most recent N entries that match the filter,
-                // rather than filtering only the last N entries (which missed most errors).
-                for (int i = _logEntries.Count - 1; i >= 0 && entries.Count < count; i--)
+                // Walk backwards so the result is the most recent N matches of the filter, not a
+                // filter over the last N entries (which missed most errors).
+                for (int i = _logEntries.Count - 1; i >= 0; i--)
                 {
                     var entry = _logEntries[i];
+                    if (!MatchesFilter(entry.type, typeFilter)) continue;
 
-                    if (typeFilter != "all")
+                    if (collapse && byKey.TryGetValue((entry.type, entry.message, entry.stackTrace), out var seen))
                     {
-                        if (typeFilter == "error" && entry.type != LogType.Error && entry.type != LogType.Exception && entry.type != LogType.Assert)
-                            continue;
-                        if (typeFilter == "warning" && entry.type != LogType.Warning)
-                            continue;
-                        if (typeFilter == "info" && entry.type != LogType.Log)
-                            continue;
+                        scanned++;
+                        seen["repeats"] = (int)seen["repeats"] + 1;
+                        seen["firstTimestamp"] = entry.timestamp.ToString("HH:mm:ss.fff");
+                        continue;
                     }
+                    // Full window: stop, unless collapsing (older copies of the entries
+                    // already taken still add to their repeat counts; the buffer is capped).
+                    if (entries.Count >= count) { if (collapse) continue; break; }
+                    scanned++;
 
-                    entries.Add(new Dictionary<string, object>
+                    var dict = new Dictionary<string, object>
                     {
                         { "message", entry.message },
                         { "type", entry.type.ToString().ToLower() },
                         { "timestamp", entry.timestamp.ToString("HH:mm:ss.fff") },
-                        { "stackTrace", entry.stackTrace ?? "" },
-                    });
+                    };
+                    if (verbose || !string.IsNullOrEmpty(entry.stackTrace))
+                        dict["stackTrace"] = entry.stackTrace ?? "";
+                    if (collapse)
+                    {
+                        dict["repeats"] = 1;
+                        byKey[(entry.type, entry.message, entry.stackTrace)] = dict;
+                    }
+                    entries.Add(dict);
                 }
             }
 
             // Reverse so entries are in chronological order (oldest first)
             entries.Reverse();
 
-            return new Dictionary<string, object>
+            if (collapse)
+            {
+                foreach (var dict in entries)
+                {
+                    if ((int)dict["repeats"] == 1)
+                    {
+                        dict.Remove("repeats");
+                        dict.Remove("firstTimestamp");
+                    }
+                }
+            }
+
+            var result = new Dictionary<string, object>
             {
                 { "count", entries.Count },
                 { "entries", entries },
             };
+            if (collapse && scanned > entries.Count) result["collapsedFrom"] = scanned;
+            return result;
+        }
+
+        private static bool MatchesFilter(LogType type, string typeFilter)
+        {
+            switch (typeFilter)
+            {
+                case "error": return type == LogType.Error || type == LogType.Exception || type == LogType.Assert;
+                case "warning": return type == LogType.Warning;
+                case "info": return type == LogType.Log;
+                default: return true;
+            }
         }
 
         /// <summary>

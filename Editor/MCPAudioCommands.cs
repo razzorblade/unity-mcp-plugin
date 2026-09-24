@@ -50,7 +50,7 @@ namespace UnityMCP.Editor
                 Undo.RegisterCreatedObjectUndo(go, $"Create Audio Source {name}");
                 
                 if (args.ContainsKey("position"))
-                    go.transform.position = MCPGameObjectCommands.DictToVector3(args["position"] as Dictionary<string, object>);
+                    go.transform.position = MCPGameObjectCommands.DictToVector3(args["position"]);
             }
 
             var source = go.GetComponent<AudioSource>();

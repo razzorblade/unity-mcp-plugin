@@ -321,8 +321,7 @@ namespace UnityMCP.Editor
 
             if (args.ContainsKey("color"))
             {
-                var cd = args["color"] as Dictionary<string, object>;
-                if (cd != null) light.color = DictToColor(cd);
+                if (args["color"] != null) light.color = MCPArgs.ToColor(args["color"], "color", rgbDefault: 1f);
             }
 
             if (args.ContainsKey("intensity"))
@@ -342,10 +341,10 @@ namespace UnityMCP.Editor
             }
 
             if (args.ContainsKey("position"))
-                go.transform.position = MCPGameObjectCommands.DictToVector3(args["position"] as Dictionary<string, object>);
+                go.transform.position = MCPGameObjectCommands.DictToVector3(args["position"]);
 
             if (args.ContainsKey("rotation"))
-                go.transform.eulerAngles = MCPGameObjectCommands.DictToVector3(args["rotation"] as Dictionary<string, object>);
+                go.transform.eulerAngles = MCPGameObjectCommands.DictToVector3(args["rotation"]);
 
             Undo.RegisterCreatedObjectUndo(go, $"Create Light {name}");
 
@@ -356,7 +355,7 @@ namespace UnityMCP.Editor
                 { "instanceId", MCPObjectId.Get(go) },
                 { "lightType", lightType.ToString() },
                 { "intensity", light.intensity },
-                { "position", MCPGameObjectCommands.Vector3ToDict(go.transform.position) },
+                { "position", MCPWire.Vec(go.transform.position) },
             };
         }
 
@@ -371,8 +370,7 @@ namespace UnityMCP.Editor
 
             if (args.ContainsKey("ambientColor"))
             {
-                var cd = args["ambientColor"] as Dictionary<string, object>;
-                if (cd != null) RenderSettings.ambientLight = DictToColor(cd);
+                if (args["ambientColor"] != null) RenderSettings.ambientLight = MCPArgs.ToColor(args["ambientColor"], "ambientColor", rgbDefault: 1f);
             }
 
             if (args.ContainsKey("ambientIntensity"))
@@ -383,8 +381,7 @@ namespace UnityMCP.Editor
 
             if (args.ContainsKey("fogColor"))
             {
-                var cd = args["fogColor"] as Dictionary<string, object>;
-                if (cd != null) RenderSettings.fogColor = DictToColor(cd);
+                if (args["fogColor"] != null) RenderSettings.fogColor = MCPArgs.ToColor(args["fogColor"], "fogColor", rgbDefault: 1f);
             }
 
             if (args.ContainsKey("fogDensity"))
@@ -423,10 +420,10 @@ namespace UnityMCP.Editor
             var probe = go.AddComponent<ReflectionProbe>();
 
             if (args.ContainsKey("position"))
-                go.transform.position = MCPGameObjectCommands.DictToVector3(args["position"] as Dictionary<string, object>);
+                go.transform.position = MCPGameObjectCommands.DictToVector3(args["position"]);
 
             if (args.ContainsKey("size"))
-                probe.size = MCPGameObjectCommands.DictToVector3(args["size"] as Dictionary<string, object>);
+                probe.size = MCPGameObjectCommands.DictToVector3(args["size"]);
 
             if (args.ContainsKey("resolution"))
                 probe.resolution = Convert.ToInt32(args["resolution"]);
@@ -445,8 +442,8 @@ namespace UnityMCP.Editor
                 { "success", true },
                 { "name", go.name },
                 { "instanceId", MCPObjectId.Get(go) },
-                { "position", MCPGameObjectCommands.Vector3ToDict(go.transform.position) },
-                { "size", MCPGameObjectCommands.Vector3ToDict(probe.size) },
+                { "position", MCPWire.Vec(go.transform.position) },
+                { "size", MCPWire.Vec(probe.size) },
             };
         }
 
@@ -458,7 +455,7 @@ namespace UnityMCP.Editor
             var group = go.AddComponent<LightProbeGroup>();
 
             if (args.ContainsKey("position"))
-                go.transform.position = MCPGameObjectCommands.DictToVector3(args["position"] as Dictionary<string, object>);
+                go.transform.position = MCPGameObjectCommands.DictToVector3(args["position"]);
 
             Undo.RegisterCreatedObjectUndo(go, $"Create Light Probe Group {name}");
 
@@ -473,19 +470,6 @@ namespace UnityMCP.Editor
 
         // ─── Helpers ───
 
-        private static Dictionary<string, object> ColorToDict(Color c)
-        {
-            return new Dictionary<string, object> { { "r", c.r }, { "g", c.g }, { "b", c.b }, { "a", c.a } };
-        }
-
-        private static Color DictToColor(Dictionary<string, object> d)
-        {
-            return new Color(
-                d.ContainsKey("r") ? Convert.ToSingle(d["r"]) : 1f,
-                d.ContainsKey("g") ? Convert.ToSingle(d["g"]) : 1f,
-                d.ContainsKey("b") ? Convert.ToSingle(d["b"]) : 1f,
-                d.ContainsKey("a") ? Convert.ToSingle(d["a"]) : 1f
-            );
-        }
+        private static float[] ColorToDict(Color c) => MCPWire.Vec(c);
     }
 }

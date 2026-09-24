@@ -85,12 +85,12 @@ namespace UnityMCP.Editor
 
             if (args.ContainsKey("position"))
             {
-                sceneView.pivot = MCPGameObjectCommands.DictToVector3(args["position"] as Dictionary<string, object>);
+                sceneView.pivot = MCPGameObjectCommands.DictToVector3(args["position"]);
             }
 
             if (args.ContainsKey("rotation"))
             {
-                var euler = MCPGameObjectCommands.DictToVector3(args["rotation"] as Dictionary<string, object>);
+                var euler = MCPGameObjectCommands.DictToVector3(args["rotation"]);
                 sceneView.rotation = Quaternion.Euler(euler);
             }
 
@@ -105,8 +105,8 @@ namespace UnityMCP.Editor
             return new Dictionary<string, object>
             {
                 { "success", true },
-                { "pivot", MCPGameObjectCommands.Vector3ToDict(sceneView.pivot) },
-                { "rotation", MCPGameObjectCommands.Vector3ToDict(sceneView.rotation.eulerAngles) },
+                { "pivot", MCPWire.Vec(sceneView.pivot) },
+                { "rotation", MCPWire.Vec(sceneView.rotation.eulerAngles) },
                 { "size", sceneView.size },
                 { "orthographic", sceneView.orthographic },
             };
@@ -134,28 +134,37 @@ namespace UnityMCP.Editor
             if (type == null)
                 return new { error = $"Type '{typeName}' not found" };
 
+            // Unbounded before: every instance in the scene came back in one reply.
+            int limit = Math.Max(1, MCPArgs.GetInt(args, "limit", 500));
             var objects = UnityEngine.Object.FindObjectsByType(type, FindObjectsSortMode.None);
             var results = new List<Dictionary<string, object>>();
+            int totalFound = 0;
             foreach (var obj in objects)
             {
                 var comp = obj as Component;
-                if (comp != null)
+                if (comp == null) continue;
+                if (++totalFound > limit) continue;
+                results.Add(new Dictionary<string, object>
                 {
-                    results.Add(new Dictionary<string, object>
-                    {
-                        { "gameObject", comp.gameObject.name },
-                        { "instanceId", MCPObjectId.Get(comp.gameObject) },
-                        { "path", MCPGameObjectCommands.GetHierarchyPath(comp.gameObject) },
-                    });
-                }
+                    { "gameObject", comp.gameObject.name },
+                    { "instanceId", MCPObjectId.Get(comp.gameObject) },
+                    { "path", MCPWire.HierarchyPath(comp.transform) },
+                });
             }
 
-            return new Dictionary<string, object>
+            var result = new Dictionary<string, object>
             {
                 { "typeName", typeName },
                 { "count", results.Count },
-                { "objects", results },
+                { "totalFound", totalFound },
             };
+            if (totalFound > results.Count) result["truncated"] = true;
+            if (MCPWire.IsVerbose(args))
+                result["objects"] = results;
+            else
+                foreach (var kv in MCPWire.Table(results, groupKey: "path", leafColumn: "gameObject", groupedBy: "parentPath"))
+                    result[kv.Key] = kv.Value;
+            return result;
         }
     }
 }

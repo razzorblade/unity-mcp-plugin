@@ -1073,10 +1073,10 @@ namespace UnityMCP.Editor
             proto.minHeight = args.ContainsKey("minHeight") ? Convert.ToSingle(args["minHeight"]) : 1f;
             proto.maxHeight = args.ContainsKey("maxHeight") ? Convert.ToSingle(args["maxHeight"]) : 2f;
 
-            if (args.ContainsKey("dryColor") && args["dryColor"] is Dictionary<string, object> dc)
-                proto.dryColor = ParseColor(dc);
-            if (args.ContainsKey("healthyColor") && args["healthyColor"] is Dictionary<string, object> hc)
-                proto.healthyColor = ParseColor(hc);
+            if (args.ContainsKey("dryColor") && args["dryColor"] != null)
+                proto.dryColor = MCPArgs.ToColor(args["dryColor"], "dryColor", rgbDefault: 1f);
+            if (args.ContainsKey("healthyColor") && args["healthyColor"] != null)
+                proto.healthyColor = MCPArgs.ToColor(args["healthyColor"], "healthyColor", rgbDefault: 1f);
 
             var protos = data.detailPrototypes.ToList();
             protos.Add(proto);
@@ -1708,15 +1708,6 @@ namespace UnityMCP.Editor
         private static Dictionary<string, object> Vec3Dict(Vector3 v)
         {
             return new Dictionary<string, object> { { "x", v.x }, { "y", v.y }, { "z", v.z } };
-        }
-
-        private static Color ParseColor(Dictionary<string, object> c)
-        {
-            float r = c.ContainsKey("r") ? Convert.ToSingle(c["r"]) : 1f;
-            float g = c.ContainsKey("g") ? Convert.ToSingle(c["g"]) : 1f;
-            float b = c.ContainsKey("b") ? Convert.ToSingle(c["b"]) : 1f;
-            float a = c.ContainsKey("a") ? Convert.ToSingle(c["a"]) : 1f;
-            return new Color(r, g, b, a);
         }
     }
 }

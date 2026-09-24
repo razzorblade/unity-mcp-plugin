@@ -65,32 +65,17 @@ namespace UnityMCP.Editor
             var component = go.GetComponent(type);
             if (component == null) return new { error = $"Component '{typeName}' not found on {go.name}" };
 
-            // Use SerializedObject to read properties
-            var serialized = new SerializedObject(component);
-            var properties = new List<Dictionary<string, object>>();
+            string propertyPath = args.ContainsKey("propertyPath") ? args["propertyPath"]?.ToString() : null;
+            var read = MCPPropertyReader.FromArgs(args).Read(new SerializedObject(component), propertyPath, skipScript: false);
+            if (read.ContainsKey("error")) return read;
 
-            var iterator = serialized.GetIterator();
-            if (iterator.NextVisible(true))
-            {
-                do
-                {
-                    properties.Add(new Dictionary<string, object>
-                    {
-                        { "name", iterator.name },
-                        { "displayName", iterator.displayName },
-                        { "type", iterator.propertyType.ToString() },
-                        { "value", GetSerializedValue(iterator) },
-                        { "editable", iterator.editable },
-                    });
-                } while (iterator.NextVisible(false));
-            }
-
-            return new Dictionary<string, object>
+            var result = new Dictionary<string, object>
             {
                 { "gameObject", go.name },
                 { "component", typeName },
-                { "properties", properties },
             };
+            foreach (var kv in read) result[kv.Key] = kv.Value;
+            return result;
         }
 
         public static object SetProperty(Dictionary<string, object> args)
@@ -401,7 +386,7 @@ namespace UnityMCP.Editor
                         { "name", comp.gameObject.name },
                         { "type", comp.GetType().Name },
                         { "instanceId", MCPObjectId.Get(comp) },
-                        { "path", GetGameObjectPath(comp.gameObject) },
+                        { "path", MCPWire.HierarchyPath(comp.transform) },
                     });
                     if (sceneObjects.Count >= 50) break; // Limit results
                 }
@@ -416,7 +401,7 @@ namespace UnityMCP.Editor
                         { "name", obj.name },
                         { "type", "GameObject" },
                         { "instanceId", MCPObjectId.Get(obj) },
-                        { "path", GetGameObjectPath(obj) },
+                        { "path", MCPWire.HierarchyPath(obj.transform) },
                     });
                     if (sceneObjects.Count >= 50) break;
                 }
@@ -499,81 +484,8 @@ namespace UnityMCP.Editor
             return null;
         }
 
-        private static string GetGameObjectPath(GameObject go)
-        {
-            string path = go.name;
-            Transform parent = go.transform.parent;
-            while (parent != null)
-            {
-                path = parent.name + "/" + path;
-                parent = parent.parent;
-            }
-            return path;
-        }
-
-        internal static object GetSerializedValue(SerializedProperty prop)
-        {
-            switch (prop.propertyType)
-            {
-                case SerializedPropertyType.Integer: return prop.intValue;
-                case SerializedPropertyType.Boolean: return prop.boolValue;
-                case SerializedPropertyType.Float: return prop.floatValue;
-                case SerializedPropertyType.String: return prop.stringValue;
-                case SerializedPropertyType.Color:
-                    var c = prop.colorValue;
-                    return new Dictionary<string, object> { { "r", c.r }, { "g", c.g }, { "b", c.b }, { "a", c.a } };
-                case SerializedPropertyType.Vector2:
-                    var v2 = prop.vector2Value;
-                    return new Dictionary<string, object> { { "x", v2.x }, { "y", v2.y } };
-                case SerializedPropertyType.Vector3:
-                    var v3 = prop.vector3Value;
-                    return new Dictionary<string, object> { { "x", v3.x }, { "y", v3.y }, { "z", v3.z } };
-                case SerializedPropertyType.Vector4:
-                    var v4 = prop.vector4Value;
-                    return new Dictionary<string, object> { { "x", v4.x }, { "y", v4.y }, { "z", v4.z }, { "w", v4.w } };
-                case SerializedPropertyType.Enum:
-                    return prop.enumNames.Length > prop.enumValueIndex ? prop.enumNames[prop.enumValueIndex] : prop.enumValueIndex.ToString();
-                case SerializedPropertyType.ObjectReference:
-                    if (prop.objectReferenceValue != null)
-                    {
-                        var refObj = prop.objectReferenceValue;
-                        var info = new Dictionary<string, object>
-                        {
-                            { "name", refObj.name },
-                            { "type", refObj.GetType().Name },
-                            { "instanceId", MCPObjectId.Get(refObj) },
-                        };
-                        // Add asset path for project assets
-                        string assetPath = AssetDatabase.GetAssetPath(refObj);
-                        if (!string.IsNullOrEmpty(assetPath))
-                            info["assetPath"] = assetPath;
-                        // Add GameObject path for scene objects
-                        if (refObj is GameObject refGo)
-                            info["path"] = GetGameObjectPath(refGo);
-                        else if (refObj is Component refComp)
-                            info["path"] = GetGameObjectPath(refComp.gameObject);
-                        return info;
-                    }
-                    return null;
-                case SerializedPropertyType.LayerMask:
-                    return prop.intValue;
-                case SerializedPropertyType.Quaternion:
-                    var q = prop.quaternionValue;
-                    return new Dictionary<string, object> { { "x", q.x }, { "y", q.y }, { "z", q.z }, { "w", q.w } };
-                case SerializedPropertyType.Rect:
-                    var r = prop.rectValue;
-                    return new Dictionary<string, object> { { "x", r.x }, { "y", r.y }, { "width", r.width }, { "height", r.height } };
-                case SerializedPropertyType.Bounds:
-                    var b = prop.boundsValue;
-                    return new Dictionary<string, object>
-                    {
-                        { "center", new Dictionary<string, object> { { "x", b.center.x }, { "y", b.center.y }, { "z", b.center.z } } },
-                        { "size", new Dictionary<string, object> { { "x", b.size.x }, { "y", b.size.y }, { "z", b.size.z } } },
-                    };
-                default:
-                    return prop.propertyType.ToString();
-            }
-        }
+        /// <summary>A property's value in the legacy (verbose) shape. See MCPPropertyReader for the dense reader.</summary>
+        internal static object GetSerializedValue(SerializedProperty prop) => MCPPropertyReader.Leaf(prop, verbose: true);
 
         /// <summary>Short human description of a value's shape for error messages.</summary>
         private static string DescribeValue(object value)
@@ -600,42 +512,21 @@ namespace UnityMCP.Editor
                 case SerializedPropertyType.String:
                     prop.stringValue = value?.ToString() ?? "";
                     break;
+                // Vector-likes accept {x,y,z} objects and [x,y,z] arrays (the dense read shape).
                 case SerializedPropertyType.Color:
-                    var cd = value as Dictionary<string, object>;
-                    if (cd == null)
-                        throw new ArgumentException($"Color property '{prop.name}' expects an object {{r,g,b,a}}, got {DescribeValue(value)}.");
-                    prop.colorValue = new Color(
-                        Convert.ToSingle(cd.GetValueOrDefault("r", 0f)),
-                        Convert.ToSingle(cd.GetValueOrDefault("g", 0f)),
-                        Convert.ToSingle(cd.GetValueOrDefault("b", 0f)),
-                        Convert.ToSingle(cd.GetValueOrDefault("a", 1f)));
+                    prop.colorValue = MCPArgs.ToColor(value, prop.name);
                     break;
                 case SerializedPropertyType.Vector2:
-                    var v2d = value as Dictionary<string, object>;
-                    if (v2d == null)
-                        throw new ArgumentException($"Vector2 property '{prop.name}' expects an object {{x,y}}, got {DescribeValue(value)}.");
-                    prop.vector2Value = new Vector2(
-                        Convert.ToSingle(v2d.GetValueOrDefault("x", 0f)),
-                        Convert.ToSingle(v2d.GetValueOrDefault("y", 0f)));
+                    prop.vector2Value = MCPArgs.ToVector2(value, prop.name);
                     break;
                 case SerializedPropertyType.Vector3:
-                    var vd = value as Dictionary<string, object>;
-                    if (vd == null)
-                        throw new ArgumentException($"Vector3 property '{prop.name}' expects an object {{x,y,z}}, got {DescribeValue(value)}.");
-                    prop.vector3Value = new Vector3(
-                        Convert.ToSingle(vd.GetValueOrDefault("x", 0f)),
-                        Convert.ToSingle(vd.GetValueOrDefault("y", 0f)),
-                        Convert.ToSingle(vd.GetValueOrDefault("z", 0f)));
+                    prop.vector3Value = MCPArgs.ToVector3(value, prop.name);
                     break;
                 case SerializedPropertyType.Vector4:
-                    var v4d = value as Dictionary<string, object>;
-                    if (v4d == null)
-                        throw new ArgumentException($"Vector4 property '{prop.name}' expects an object {{x,y,z,w}}, got {DescribeValue(value)}.");
-                    prop.vector4Value = new Vector4(
-                        Convert.ToSingle(v4d.GetValueOrDefault("x", 0f)),
-                        Convert.ToSingle(v4d.GetValueOrDefault("y", 0f)),
-                        Convert.ToSingle(v4d.GetValueOrDefault("z", 0f)),
-                        Convert.ToSingle(v4d.GetValueOrDefault("w", 0f)));
+                    prop.vector4Value = MCPArgs.ToVector4(value, prop.name);
+                    break;
+                case SerializedPropertyType.Quaternion:
+                    prop.quaternionValue = MCPArgs.ToQuaternion(value, prop.name);
                     break;
                 case SerializedPropertyType.Enum:
                     if (value is string enumName)

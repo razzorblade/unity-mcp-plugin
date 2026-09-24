@@ -44,37 +44,74 @@ namespace UnityMCP.Editor
             return AssetPreview.GetMiniThumbnail(asset);
         }
 
-        private static Dictionary<string, object> Vec3ToDict(Vector3 v)
-        {
-            return new Dictionary<string, object>
-            {
-                { "x", Math.Round(v.x, 4) },
-                { "y", Math.Round(v.y, 4) },
-                { "z", Math.Round(v.z, 4) },
-            };
-        }
+        private static double[] RoundedVec3(Vector3 v) =>
+            new[] { Math.Round(v.x, 4), Math.Round(v.y, 4), Math.Round(v.z, 4) };
 
         private static Dictionary<string, object> BoundsToDict(Bounds b)
         {
             return new Dictionary<string, object>
             {
-                { "center", Vec3ToDict(b.center) },
-                { "size", Vec3ToDict(b.size) },
-                { "extents", Vec3ToDict(b.extents) },
-                { "min", Vec3ToDict(b.min) },
-                { "max", Vec3ToDict(b.max) },
+                { "center", RoundedVec3(b.center) },
+                { "size", RoundedVec3(b.size) },
             };
         }
 
-        private static Dictionary<string, object> ColorToDict(Color c)
+        private static double[] RoundedColor(Color c) =>
+            new[] { Math.Round(c.r, 4), Math.Round(c.g, 4), Math.Round(c.b, 4), Math.Round(c.a, 4) };
+
+        /// <summary>
+        /// The scene-object argument. The MCP tool schemas name it objectPath while these handlers
+        /// read gameObjectPath — so mesh/material/renderer info never saw it (renderer info, where
+        /// it is required, could not succeed at all). Both names are accepted.
+        /// </summary>
+        private static string ObjectPathArg(Dictionary<string, object> args)
         {
-            return new Dictionary<string, object>
+            if (args.TryGetValue("gameObjectPath", out object a) && a != null && a.ToString().Length > 0) return a.ToString();
+            if (args.TryGetValue("objectPath", out object b) && b != null) return b.ToString();
+            return "";
+        }
+
+        /// <summary>
+        /// Preview size requested by the caller: previewSize (0 = none) or includePreview:false.
+        /// Returns 0 when no preview is wanted, otherwise the longest edge in pixels.
+        /// </summary>
+        private static int PreviewSizeArg(Dictionary<string, object> args, int defaultSize)
+        {
+            if (!MCPArgs.GetBool(args, "includePreview", true)) return 0;
+            return Mathf.Clamp(MCPArgs.GetInt(args, "previewSize", defaultSize), 0, 1024);
+        }
+
+        /// <summary>Asset preview thumbnail as base64 PNG, scaled so its longest edge is <paramref name="size"/>.</summary>
+        private static string EncodePreview(UnityEngine.Object asset, int size)
+        {
+            if (size <= 0) return null;
+            try
             {
-                { "r", Math.Round(c.r, 4) },
-                { "g", Math.Round(c.g, 4) },
-                { "b", Math.Round(c.b, 4) },
-                { "a", Math.Round(c.a, 4) },
-            };
+                var preview = GetPreviewWithRetry(asset, 20);
+                if (preview == null) return null;
+                float scale = (float)size / Mathf.Max(preview.width, preview.height);
+                int w = Mathf.Max(1, Mathf.RoundToInt(preview.width * scale));
+                int hgt = Mathf.Max(1, Mathf.RoundToInt(preview.height * scale));
+                RenderTexture rt = RenderTexture.GetTemporary(w, hgt, 0);
+                Texture2D readable = null;
+                try
+                {
+                    Graphics.Blit(preview, rt);
+                    RenderTexture.active = rt;
+                    readable = new Texture2D(w, hgt, TextureFormat.RGBA32, false);
+                    readable.ReadPixels(new Rect(0, 0, w, hgt), 0, 0);
+                    readable.Apply();
+                    RenderTexture.active = null;
+                    return TextureToBase64(readable);
+                }
+                finally
+                {
+                    RenderTexture.active = null;
+                    RenderTexture.ReleaseTemporary(rt);
+                    if (readable != null) UnityEngine.Object.DestroyImmediate(readable);
+                }
+            }
+            catch { return null; } // preview is optional, never fail the info call over it
         }
 
         // ─── 1. Asset Preview (Base64 PNG) ───
@@ -244,7 +281,7 @@ namespace UnityMCP.Editor
         public static object GetMeshInfo(Dictionary<string, object> args)
         {
             string assetPath = args.ContainsKey("assetPath") ? args["assetPath"].ToString() : "";
-            string gameObjectPath = args.ContainsKey("gameObjectPath") ? args["gameObjectPath"].ToString() : "";
+            string gameObjectPath = ObjectPathArg(args);
 
             Mesh mesh = null;
             string source = "";
@@ -349,7 +386,7 @@ namespace UnityMCP.Editor
         public static object GetMaterialInfo(Dictionary<string, object> args)
         {
             string assetPath = args.ContainsKey("assetPath") ? args["assetPath"].ToString() : "";
-            string gameObjectPath = args.ContainsKey("gameObjectPath") ? args["gameObjectPath"].ToString() : "";
+            string gameObjectPath = ObjectPathArg(args);
             int materialIndex = args.ContainsKey("materialIndex") ? Convert.ToInt32(args["materialIndex"]) : 0;
 
             Material mat = null;
@@ -408,7 +445,7 @@ namespace UnityMCP.Editor
                     switch (propType)
                     {
                         case ShaderPropertyType.Color:
-                            propDict["value"] = ColorToDict(mat.GetColor(propName));
+                            propDict["value"] = RoundedColor(mat.GetColor(propName));
                             break;
                         case ShaderPropertyType.Float:
                         case ShaderPropertyType.Range:
@@ -416,11 +453,7 @@ namespace UnityMCP.Editor
                             break;
                         case ShaderPropertyType.Vector:
                             var v = mat.GetVector(propName);
-                            propDict["value"] = new Dictionary<string, object>
-                            {
-                                { "x", Math.Round(v.x, 4) }, { "y", Math.Round(v.y, 4) },
-                                { "z", Math.Round(v.z, 4) }, { "w", Math.Round(v.w, 4) },
-                            };
+                            propDict["value"] = new[] { Math.Round(v.x, 4), Math.Round(v.y, 4), Math.Round(v.z, 4), Math.Round(v.w, 4) };
                             break;
                         case ShaderPropertyType.Texture:
                             var tex = mat.GetTexture(propName);
@@ -451,36 +484,11 @@ namespace UnityMCP.Editor
 
                 properties.Add(propDict);
             }
-            result["properties"] = properties;
+            // Tabular: {columns:[name,type,description,value], rows:[...]} — keys once, not per property.
+            result["properties"] = MCPWire.IsVerbose(args) ? (object)properties : MCPWire.Table(properties);
 
-            // Material preview thumbnail
-            string base64 = null;
-            try
-            {
-                var preview = GetPreviewWithRetry(mat, 20);
-                if (preview != null)
-                {
-                    RenderTexture rt = RenderTexture.GetTemporary(preview.width, preview.height, 0);
-                    try
-                    {
-                        Graphics.Blit(preview, rt);
-                        RenderTexture.active = rt;
-                        var readable = new Texture2D(preview.width, preview.height, TextureFormat.RGBA32, false);
-                        readable.ReadPixels(new Rect(0, 0, preview.width, preview.height), 0, 0);
-                        readable.Apply();
-                        RenderTexture.active = null;
-                        base64 = TextureToBase64(readable);
-                        UnityEngine.Object.DestroyImmediate(readable);
-                    }
-                    finally
-                    {
-                        RenderTexture.active = null;
-                        RenderTexture.ReleaseTemporary(rt);
-                    }
-                }
-            }
-            catch { /* preview optional, don't fail */ }
-
+            // Material preview thumbnail (includePreview:false or previewSize:0 skips the render)
+            string base64 = EncodePreview(mat, PreviewSizeArg(args, 128));
             if (base64 != null) result["base64"] = base64;
 
             return result;
@@ -507,12 +515,7 @@ namespace UnityMCP.Editor
                 { "filterMode", texture.filterMode.ToString() },
                 { "wrapMode", texture.wrapMode.ToString() },
                 { "anisoLevel", texture.anisoLevel },
-                { "texelSize", new Dictionary<string, object>
-                    {
-                        { "x", texture.texelSize.x },
-                        { "y", texture.texelSize.y },
-                    }
-                },
+                { "texelSize", MCPWire.Vec(texture.texelSize) },
             };
 
             // Texture2D-specific info
@@ -546,34 +549,8 @@ namespace UnityMCP.Editor
             long memBytes = UnityEngine.Profiling.Profiler.GetRuntimeMemorySizeLong(texture);
             result["memoryEstimateKB"] = Math.Round(memBytes / 1024.0, 1);
 
-            // Preview thumbnail
-            string base64 = null;
-            try
-            {
-                var preview = GetPreviewWithRetry(texture, 20);
-                if (preview != null)
-                {
-                    RenderTexture rt = RenderTexture.GetTemporary(preview.width, preview.height, 0);
-                    try
-                    {
-                        Graphics.Blit(preview, rt);
-                        RenderTexture.active = rt;
-                        var readable = new Texture2D(preview.width, preview.height, TextureFormat.RGBA32, false);
-                        readable.ReadPixels(new Rect(0, 0, preview.width, preview.height), 0, 0);
-                        readable.Apply();
-                        RenderTexture.active = null;
-                        base64 = TextureToBase64(readable);
-                        UnityEngine.Object.DestroyImmediate(readable);
-                    }
-                    finally
-                    {
-                        RenderTexture.active = null;
-                        RenderTexture.ReleaseTemporary(rt);
-                    }
-                }
-            }
-            catch { /* preview optional */ }
-
+            // Preview thumbnail (previewSize:0 or includePreview:false skips the render)
+            string base64 = EncodePreview(texture, PreviewSizeArg(args, 128));
             if (base64 != null) result["base64"] = base64;
 
             return result;
@@ -583,9 +560,9 @@ namespace UnityMCP.Editor
 
         public static object GetRendererInfo(Dictionary<string, object> args)
         {
-            string gameObjectPath = args.ContainsKey("gameObjectPath") ? args["gameObjectPath"].ToString() : "";
+            string gameObjectPath = ObjectPathArg(args);
             if (string.IsNullOrEmpty(gameObjectPath))
-                return new { error = "gameObjectPath is required" };
+                return new { error = "objectPath (or gameObjectPath) is required" };
 
             var go = GameObject.Find(gameObjectPath);
             if (go == null)
@@ -692,7 +669,7 @@ namespace UnityMCP.Editor
                 {
                     { "name", light.gameObject.name },
                     { "type", light.type.ToString() },
-                    { "color", ColorToDict(light.color) },
+                    { "color", RoundedColor(light.color) },
                     { "intensity", Math.Round(light.intensity, 4) },
                     { "range", Math.Round(light.range, 4) },
                     { "enabled", light.enabled },

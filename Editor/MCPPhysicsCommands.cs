@@ -12,8 +12,8 @@ namespace UnityMCP.Editor
     {
         public static object Raycast(Dictionary<string, object> args)
         {
-            Vector3 origin = MCPGameObjectCommands.DictToVector3(args.ContainsKey("origin") ? args["origin"] as Dictionary<string, object> : null);
-            Vector3 direction = MCPGameObjectCommands.DictToVector3(args.ContainsKey("direction") ? args["direction"] as Dictionary<string, object> : null);
+            Vector3 origin = MCPGameObjectCommands.DictToVector3(args.ContainsKey("origin") ? args["origin"] : null);
+            Vector3 direction = MCPGameObjectCommands.DictToVector3(args.ContainsKey("direction") ? args["direction"] : null);
             float maxDistance = args.ContainsKey("maxDistance") ? Convert.ToSingle(args["maxDistance"]) : Mathf.Infinity;
             int layerMask = args.ContainsKey("layerMask") ? Convert.ToInt32(args["layerMask"]) : Physics.DefaultRaycastLayers;
 
@@ -34,8 +34,8 @@ namespace UnityMCP.Editor
                 {
                     { "hitCount", results.Count },
                     { "hits", results },
-                    { "origin", MCPGameObjectCommands.Vector3ToDict(origin) },
-                    { "direction", MCPGameObjectCommands.Vector3ToDict(direction) },
+                    { "origin", MCPWire.Vec(origin) },
+                    { "direction", MCPWire.Vec(direction) },
                 };
             }
             else
@@ -43,21 +43,21 @@ namespace UnityMCP.Editor
                 RaycastHit hit;
                 bool didHit = Physics.Raycast(origin, direction, out hit, maxDistance, layerMask);
                 if (!didHit)
-                    return new { hit = false, origin = MCPGameObjectCommands.Vector3ToDict(origin), direction = MCPGameObjectCommands.Vector3ToDict(direction) };
+                    return new { hit = false, origin = MCPWire.Vec(origin), direction = MCPWire.Vec(direction) };
 
                 return new Dictionary<string, object>
                 {
                     { "hit", true },
                     { "hitInfo", HitToDict(hit) },
-                    { "origin", MCPGameObjectCommands.Vector3ToDict(origin) },
-                    { "direction", MCPGameObjectCommands.Vector3ToDict(direction) },
+                    { "origin", MCPWire.Vec(origin) },
+                    { "direction", MCPWire.Vec(direction) },
                 };
             }
         }
 
         public static object OverlapSphere(Dictionary<string, object> args)
         {
-            Vector3 center = MCPGameObjectCommands.DictToVector3(args.ContainsKey("center") ? args["center"] as Dictionary<string, object> : null);
+            Vector3 center = MCPGameObjectCommands.DictToVector3(args.ContainsKey("center") ? args["center"] : null);
             float radius = args.ContainsKey("radius") ? Convert.ToSingle(args["radius"]) : 1f;
             int layerMask = args.ContainsKey("layerMask") ? Convert.ToInt32(args["layerMask"]) : Physics.AllLayers;
 
@@ -69,14 +69,14 @@ namespace UnityMCP.Editor
                 {
                     { "gameObject", col.gameObject.name },
                     { "colliderType", col.GetType().Name },
-                    { "position", MCPGameObjectCommands.Vector3ToDict(col.transform.position) },
+                    { "position", MCPWire.Vec(col.transform.position) },
                     { "instanceId", MCPObjectId.Get(col.gameObject) },
                 });
             }
 
             return new Dictionary<string, object>
             {
-                { "center", MCPGameObjectCommands.Vector3ToDict(center) },
+                { "center", MCPWire.Vec(center) },
                 { "radius", radius },
                 { "count", results.Count },
                 { "colliders", results },
@@ -85,8 +85,8 @@ namespace UnityMCP.Editor
 
         public static object OverlapBox(Dictionary<string, object> args)
         {
-            Vector3 center = MCPGameObjectCommands.DictToVector3(args.ContainsKey("center") ? args["center"] as Dictionary<string, object> : null);
-            Vector3 halfExtents = MCPGameObjectCommands.DictToVector3(args.ContainsKey("halfExtents") ? args["halfExtents"] as Dictionary<string, object> : null);
+            Vector3 center = MCPGameObjectCommands.DictToVector3(args.ContainsKey("center") ? args["center"] : null);
+            Vector3 halfExtents = MCPGameObjectCommands.DictToVector3(args.ContainsKey("halfExtents") ? args["halfExtents"] : null);
             if (halfExtents == Vector3.zero) halfExtents = Vector3.one * 0.5f;
             int layerMask = args.ContainsKey("layerMask") ? Convert.ToInt32(args["layerMask"]) : Physics.AllLayers;
 
@@ -98,15 +98,15 @@ namespace UnityMCP.Editor
                 {
                     { "gameObject", col.gameObject.name },
                     { "colliderType", col.GetType().Name },
-                    { "position", MCPGameObjectCommands.Vector3ToDict(col.transform.position) },
+                    { "position", MCPWire.Vec(col.transform.position) },
                     { "instanceId", MCPObjectId.Get(col.gameObject) },
                 });
             }
 
             return new Dictionary<string, object>
             {
-                { "center", MCPGameObjectCommands.Vector3ToDict(center) },
-                { "halfExtents", MCPGameObjectCommands.Vector3ToDict(halfExtents) },
+                { "center", MCPWire.Vec(center) },
+                { "halfExtents", MCPWire.Vec(halfExtents) },
                 { "count", results.Count },
                 { "colliders", results },
             };
@@ -167,13 +167,13 @@ namespace UnityMCP.Editor
         {
             if (args.ContainsKey("gravity"))
             {
-                var gravity = MCPGameObjectCommands.DictToVector3(args["gravity"] as Dictionary<string, object>);
+                var gravity = MCPGameObjectCommands.DictToVector3(args["gravity"]);
                 Physics.gravity = gravity;
             }
 
             return new Dictionary<string, object>
             {
-                { "gravity", MCPGameObjectCommands.Vector3ToDict(Physics.gravity) },
+                { "gravity", MCPWire.Vec(Physics.gravity) },
             };
         }
 
@@ -185,8 +185,8 @@ namespace UnityMCP.Editor
             {
                 { "gameObject", hit.collider.gameObject.name },
                 { "instanceId", MCPObjectId.Get(hit.collider.gameObject) },
-                { "point", MCPGameObjectCommands.Vector3ToDict(hit.point) },
-                { "normal", MCPGameObjectCommands.Vector3ToDict(hit.normal) },
+                { "point", MCPWire.Vec(hit.point) },
+                { "normal", MCPWire.Vec(hit.normal) },
                 { "distance", hit.distance },
                 { "colliderType", hit.collider.GetType().Name },
             };

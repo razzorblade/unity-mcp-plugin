@@ -37,11 +37,12 @@ namespace UnityMCP.Editor
                 });
             }
 
-            return new Dictionary<string, object>
-            {
-                { "count", packages.Count },
-                { "packages", packages },
-            };
+            // Tabular unless verbose: keys once, and a constant column (e.g. every source
+            // "Registry") is stated once in "common".
+            var result = new Dictionary<string, object> { { "count", packages.Count } };
+            if (MCPWire.IsVerbose(args)) result["packages"] = packages;
+            else result["packages"] = MCPWire.Table(packages);
+            return result;
         }
 
         // ─── Add Package ───
@@ -106,9 +107,13 @@ namespace UnityMCP.Editor
             if (searchRequest.Status == StatusCode.Failure)
                 return new { error = searchRequest.Error?.message ?? "Search failed" };
 
+            // Registry searches can match hundreds of packages; bound the reply.
+            int limit = Math.Max(1, MCPArgs.GetInt(args, "limit", 50));
             var results = new List<Dictionary<string, object>>();
+            int totalFound = 0;
             foreach (var pkg in searchRequest.Result)
             {
+                if (++totalFound > limit) continue;
                 results.Add(new Dictionary<string, object>
                 {
                     { "name", pkg.name },
@@ -118,12 +123,16 @@ namespace UnityMCP.Editor
                 });
             }
 
-            return new Dictionary<string, object>
+            var result = new Dictionary<string, object>
             {
                 { "query", query },
+                { "totalFound", totalFound },
                 { "count", results.Count },
-                { "results", results },
             };
+            if (totalFound > results.Count) result["truncated"] = true;
+            if (MCPWire.IsVerbose(args)) result["results"] = results;
+            else result["results"] = MCPWire.Table(results);
+            return result;
         }
 
         // ─── Get Package Info ───

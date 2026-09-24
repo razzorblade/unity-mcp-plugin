@@ -278,7 +278,7 @@ namespace UnityMCP.Editor
             if (verbose || components.Count > 0) node["components"] = components;
             // Vector3 == uses an approximate comparison, so float noise still counts as origin.
             if (verbose || go.transform.position != Vector3.zero)
-                node["position"] = VectorToDict(go.transform.position);
+                node["position"] = MCPWire.Vec(go.transform.position, verbose);
 
             if (depth < maxDepth && go.transform.childCount > 0)
             {
@@ -311,11 +311,6 @@ namespace UnityMCP.Editor
             }
 
             return node;
-        }
-
-        private static Dictionary<string, object> VectorToDict(Vector3 v)
-        {
-            return new Dictionary<string, object> { { "x", v.x }, { "y", v.y }, { "z", v.z } };
         }
     }
 }

@@ -12,6 +12,57 @@ namespace UnityMCP.Editor
     /// </summary>
     public static class MCPPrefabCommands
     {
+        /// <summary>Legacy shape: one {target, propertyPath, value} entry per modification.</summary>
+        private static List<Dictionary<string, object>> ListOverrides(PropertyModification[] modifications)
+        {
+            var overrides = new List<Dictionary<string, object>>(modifications.Length);
+            foreach (var mod in modifications)
+            {
+                overrides.Add(new Dictionary<string, object>
+                {
+                    { "target", mod.target != null ? mod.target.name : "null" },
+                    { "propertyPath", mod.propertyPath },
+                    { "value", mod.value },
+                });
+            }
+            return overrides;
+        }
+
+        /// <summary>
+        /// Dense shape: { "&lt;target name&gt; (&lt;Type&gt;)": { propertyPath: value } }. The target is
+        /// named once instead of per modification, and its type is included: a bare target name
+        /// was ambiguous (a GameObject and each of its components share one name). Two distinct
+        /// targets with the same name and type get a "#n" suffix. An object-reference override
+        /// carries its reference as { "$ref": instanceId } when the value string is empty.
+        /// </summary>
+        private static Dictionary<string, object> GroupOverrides(PropertyModification[] modifications)
+        {
+            var grouped = new Dictionary<string, object>();
+            var keyOf = new Dictionary<UnityEngine.Object, string>();
+            var taken = new HashSet<string>();
+            foreach (var mod in modifications)
+            {
+                string key;
+                if (mod.target == null) key = "(missing target)";
+                else if (!keyOf.TryGetValue(mod.target, out key))
+                {
+                    string baseKey = $"{mod.target.name} ({mod.target.GetType().Name})";
+                    key = baseKey;
+                    for (int n = 2; taken.Contains(key); n++) key = $"{baseKey} #{n}";
+                    taken.Add(key);
+                    keyOf[mod.target] = key;
+                }
+
+                if (!grouped.TryGetValue(key, out object bucket))
+                    grouped[key] = bucket = new Dictionary<string, object>();
+                object value = mod.value;
+                if (string.IsNullOrEmpty(mod.value) && mod.objectReference != null)
+                    value = new Dictionary<string, object> { { "$ref", MCPObjectId.Get(mod.objectReference) } };
+                ((Dictionary<string, object>)bucket)[mod.propertyPath] = value;
+            }
+            return grouped;
+        }
+
         /// <summary>
         /// Get detailed prefab info: overrides, variant status, nested prefabs.
         /// </summary>
@@ -26,7 +77,7 @@ namespace UnityMCP.Editor
                 if (prefab == null)
                     return new { error = $"Prefab not found at '{assetPath}'" };
 
-                return BuildPrefabInfo(prefab, assetPath, false);
+                return BuildPrefabInfo(prefab, assetPath, false, MCPWire.IsVerbose(args));
             }
 
             var go = MCPGameObjectCommands.FindGameObject(args);
@@ -41,10 +92,10 @@ namespace UnityMCP.Editor
                 return new { error = "GameObject is not a prefab instance" };
 
             string sourcePath = PrefabUtility.GetPrefabAssetPathOfNearestInstanceRoot(go);
-            return BuildPrefabInfo(go, sourcePath, true);
+            return BuildPrefabInfo(go, sourcePath, true, MCPWire.IsVerbose(args));
         }
 
-        private static object BuildPrefabInfo(GameObject go, string assetPath, bool isInstance)
+        private static object BuildPrefabInfo(GameObject go, string assetPath, bool isInstance, bool verbose)
         {
             var result = new Dictionary<string, object>
             {
@@ -63,18 +114,10 @@ namespace UnityMCP.Editor
                 var modifications = PrefabUtility.GetPropertyModifications(go);
                 if (modifications != null)
                 {
-                    var overrides = new List<Dictionary<string, object>>();
-                    foreach (var mod in modifications)
-                    {
-                        overrides.Add(new Dictionary<string, object>
-                        {
-                            { "target", mod.target != null ? mod.target.name : "null" },
-                            { "propertyPath", mod.propertyPath },
-                            { "value", mod.value },
-                        });
-                    }
-                    result["overrides"] = overrides;
-                    result["overrideCount"] = overrides.Count;
+                    result["overrides"] = verbose
+                        ? (object)ListOverrides(modifications)
+                        : GroupOverrides(modifications);
+                    result["overrideCount"] = modifications.Length;
                 }
 
                 // Added components

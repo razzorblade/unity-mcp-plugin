@@ -70,8 +70,8 @@ namespace UnityMCP.Editor
                 { "totalFound", totalFound },
                 { "returned", results.Count },
                 { "limit", limit },
-                { "results", results },
             };
+            AddResults(result, results, args, "name");
             if (totalFound > limit)
                 result["truncated"] = true;
             return result;
@@ -112,8 +112,8 @@ namespace UnityMCP.Editor
                 { "totalFound", objects.Length },
                 { "returned", results.Count },
                 { "limit", limit },
-                { "results", results },
             };
+            AddResults(result, results, args, "name");
             if (objects.Length > limit)
                 result["truncated"] = true;
             return result;
@@ -164,8 +164,8 @@ namespace UnityMCP.Editor
                 { "totalFound", totalFound },
                 { "returned", results.Count },
                 { "limit", limit },
-                { "results", results },
             };
+            AddResults(result, results, args, "name");
             if (totalFound > limit)
                 result["truncated"] = true;
             return result;
@@ -227,8 +227,8 @@ namespace UnityMCP.Editor
                 { "totalFound", totalFound },
                 { "returned", results.Count },
                 { "limit", limit },
-                { "results", results },
             };
+            AddResults(result, results, args, "name");
             if (totalFound > limit)
                 result["truncated"] = true;
             return result;
@@ -278,8 +278,8 @@ namespace UnityMCP.Editor
                 { "totalFound", totalFound },
                 { "returned", results.Count },
                 { "limit", limit },
-                { "results", results },
             };
+            AddResults(result, results, args, "name");
             if (totalFound > limit)
                 result["truncated"] = true;
             return result;
@@ -293,6 +293,8 @@ namespace UnityMCP.Editor
             string type = args.ContainsKey("type") ? args["type"].ToString() : "";
             string folder = args.ContainsKey("folder") ? args["folder"].ToString() : "";
             int maxResults = args.ContainsKey("maxResults") ? Convert.ToInt32(args["maxResults"]) : 100;
+            bool verbose = MCPWire.IsVerbose(args);
+            bool includeGuid = MCPArgs.GetBool(args, "includeGuid", true);
 
             string searchFilter = "";
             if (!string.IsNullOrEmpty(query)) searchFilter += query;
@@ -309,21 +311,28 @@ namespace UnityMCP.Editor
             {
                 string assetPath = AssetDatabase.GUIDToAssetPath(guids[i]);
                 var assetType = AssetDatabase.GetMainAssetTypeAtPath(assetPath);
-                results.Add(new Dictionary<string, object>
+                var row = new Dictionary<string, object>
                 {
                     { "path", assetPath },
-                    { "guid", guids[i] },
                     { "type", assetType != null ? assetType.Name : "Unknown" },
-                    { "name", System.IO.Path.GetFileNameWithoutExtension(assetPath) },
-                });
+                };
+                if (verbose || includeGuid) row["guid"] = guids[i];
+                if (verbose) row["name"] = System.IO.Path.GetFileNameWithoutExtension(assetPath);
+                results.Add(row);
             }
 
-            return new Dictionary<string, object>
+            var result = new Dictionary<string, object>
             {
                 { "totalFound", guids.Length },
                 { "returned", results.Count },
-                { "results", results },
             };
+            if (guids.Length > results.Count) result["truncated"] = true;
+            if (verbose)
+                result["results"] = results;
+            else
+                foreach (var kv in MCPWire.Table(results, groupKey: "path", leafColumn: "file", groupedBy: "folder"))
+                    result[kv.Key] = kv.Value;
+            return result;
         }
 
         // ─── Find Missing References ───
@@ -394,8 +403,8 @@ namespace UnityMCP.Editor
                 { "totalFound", totalFound },
                 { "returned", results.Count },
                 { "limit", limit },
-                { "results", results },
             };
+            AddResults(result, results, args, "gameObject");
             if (totalFound > limit)
                 result["truncated"] = true;
             return result;
@@ -477,16 +486,22 @@ namespace UnityMCP.Editor
 
         // ─── Helpers ───
 
-        private static string GetGameObjectPath(GameObject go)
+        /// <summary>
+        /// Attach search rows to <paramref name="result"/>: a table grouped by parent path (dense,
+        /// default) or the legacy <c>results</c> list (verbose). Full path = group + "/" + leaf.
+        /// </summary>
+        private static void AddResults(Dictionary<string, object> result, List<Dictionary<string, object>> rows,
+            Dictionary<string, object> args, string leafColumn)
         {
-            string path = go.name;
-            Transform parent = go.transform.parent;
-            while (parent != null)
+            if (MCPWire.IsVerbose(args))
             {
-                path = parent.name + "/" + path;
-                parent = parent.parent;
+                result["results"] = rows;
+                return;
             }
-            return path;
+            foreach (var kv in MCPWire.Table(rows, groupKey: "path", leafColumn: leafColumn, groupedBy: "parentPath"))
+                result[kv.Key] = kv.Value;
         }
+
+        private static string GetGameObjectPath(GameObject go) => MCPWire.HierarchyPath(go.transform);
     }
 }

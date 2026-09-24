@@ -14,6 +14,12 @@ namespace UnityMCP.Editor
             string typeFilter = args.ContainsKey("type") ? args["type"].ToString() : null;
             string search = args.ContainsKey("search") ? args["search"].ToString() : null;
             bool recursive = !args.ContainsKey("recursive") || Convert.ToBoolean(args["recursive"]);
+            // maxResults was advertised by the MCP tool but never read: every call returned
+            // the whole folder, however large.
+            int maxResults = Math.Max(0, MCPArgs.GetInt(args, "maxResults", 500));
+            int offset = Math.Max(0, MCPArgs.GetInt(args, "offset", 0));
+            bool includeGuid = MCPArgs.GetBool(args, "includeGuid", true);
+            bool verbose = MCPWire.IsVerbose(args);
 
             string searchQuery = "";
             if (!string.IsNullOrEmpty(search))
@@ -24,43 +30,76 @@ namespace UnityMCP.Editor
             string[] guids;
             if (!string.IsNullOrEmpty(searchQuery))
             {
-                string[] searchFolders = recursive ? new[] { folder } : new[] { folder };
-                guids = AssetDatabase.FindAssets(searchQuery.Trim(), searchFolders);
+                guids = AssetDatabase.FindAssets(searchQuery.Trim(), new[] { folder });
             }
             else
             {
                 guids = AssetDatabase.FindAssets("", new[] { folder });
             }
 
-            var assets = new List<Dictionary<string, object>>();
+            // Filter first (cheap string work), then page, then pay for type lookups only on
+            // the page actually returned.
+            string normalizedFolder = folder.TrimEnd('/');
+            var matches = new List<(string guid, string path)>(guids.Length);
             foreach (var guid in guids)
             {
                 string path = AssetDatabase.GUIDToAssetPath(guid);
-
-                // If not recursive, only include direct children
                 if (!recursive)
                 {
-                    string parentDir = Path.GetDirectoryName(path).Replace("\\", "/");
-                    if (parentDir != folder) continue;
+                    int slash = path.LastIndexOf('/');
+                    if (slash < 0 || !string.Equals(path.Substring(0, slash), normalizedFolder, StringComparison.Ordinal))
+                        continue;
                 }
-
-                var assetType = AssetDatabase.GetMainAssetTypeAtPath(path);
-                assets.Add(new Dictionary<string, object>
-                {
-                    { "path", path },
-                    { "name", Path.GetFileName(path) },
-                    { "type", assetType?.Name ?? "Unknown" },
-                    { "guid", guid },
-                    { "isFolder", AssetDatabase.IsValidFolder(path) },
-                });
+                matches.Add((guid, path));
             }
 
-            return new Dictionary<string, object>
+            int end = (int)Math.Min((long)offset + maxResults, matches.Count);
+            var assets = new List<Dictionary<string, object>>(Math.Max(0, end - offset));
+            for (int i = offset; i < end; i++)
+            {
+                var (guid, path) = matches[i];
+                bool isFolder = AssetDatabase.IsValidFolder(path);
+                if (verbose)
+                {
+                    var assetType = AssetDatabase.GetMainAssetTypeAtPath(path);
+                    assets.Add(new Dictionary<string, object>
+                    {
+                        { "path", path },
+                        { "name", Path.GetFileName(path) },
+                        { "type", assetType?.Name ?? "Unknown" },
+                        { "guid", guid },
+                        { "isFolder", isFolder },
+                    });
+                    continue;
+                }
+                // Dense: name is the path's last segment and isFolder is type "Folder".
+                var row = new Dictionary<string, object>
+                {
+                    { "path", path },
+                    { "type", isFolder ? "Folder" : AssetDatabase.GetMainAssetTypeAtPath(path)?.Name ?? "Unknown" },
+                };
+                if (includeGuid) row["guid"] = guid;
+                assets.Add(row);
+            }
+
+            var result = new Dictionary<string, object>
             {
                 { "folder", folder },
+                { "totalFound", matches.Count },
                 { "count", assets.Count },
-                { "assets", assets },
             };
+            if (offset > 0) result["offset"] = offset;
+            if (end < matches.Count)
+            {
+                result["truncated"] = true;
+                result["nextOffset"] = end;
+            }
+            if (verbose)
+                result["assets"] = assets;
+            else
+                foreach (var kv in MCPWire.Table(assets, groupKey: "path", leafColumn: "file", groupedBy: "folder"))
+                    result[kv.Key] = kv.Value;
+            return result;
         }
 
         public static object Import(Dictionary<string, object> args)
@@ -206,10 +245,10 @@ namespace UnityMCP.Editor
                 instance.name = args["name"].ToString();
 
             if (args.ContainsKey("position"))
-                instance.transform.position = MCPGameObjectCommands.DictToVector3(args["position"] as Dictionary<string, object>);
+                instance.transform.position = MCPGameObjectCommands.DictToVector3(args["position"]);
 
             if (args.ContainsKey("rotation"))
-                instance.transform.eulerAngles = MCPGameObjectCommands.DictToVector3(args["rotation"] as Dictionary<string, object>);
+                instance.transform.eulerAngles = MCPGameObjectCommands.DictToVector3(args["rotation"]);
 
             if (args.ContainsKey("parent"))
             {
@@ -224,7 +263,7 @@ namespace UnityMCP.Editor
                 { "success", true },
                 { "name", instance.name },
                 { "instanceId", MCPObjectId.Get(instance) },
-                { "position", MCPGameObjectCommands.Vector3ToDict(instance.transform.position) },
+                { "position", MCPWire.Vec(instance.transform.position) },
             };
         }
 

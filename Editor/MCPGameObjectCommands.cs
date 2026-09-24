@@ -36,11 +36,11 @@ namespace UnityMCP.Editor
 
             // Set transform
             if (args.ContainsKey("position"))
-                go.transform.position = DictToVector3(args["position"] as Dictionary<string, object>);
+                go.transform.position = DictToVector3(args["position"]);
             if (args.ContainsKey("rotation"))
-                go.transform.eulerAngles = DictToVector3(args["rotation"] as Dictionary<string, object>);
+                go.transform.eulerAngles = DictToVector3(args["rotation"]);
             if (args.ContainsKey("scale"))
-                go.transform.localScale = DictToVector3(args["scale"] as Dictionary<string, object>);
+                go.transform.localScale = DictToVector3(args["scale"]);
 
             Undo.RegisterCreatedObjectUndo(go, $"Create {name}");
 
@@ -49,7 +49,7 @@ namespace UnityMCP.Editor
                 { "success", true },
                 { "name", go.name },
                 { "instanceId", MCPObjectId.Get(go) },
-                { "position", Vector3ToDict(go.transform.position) },
+                { "position", MCPWire.Vec(go.transform.position) },
             };
         }
 
@@ -118,7 +118,74 @@ namespace UnityMCP.Editor
         {
             var go = FindGameObject(args);
             if (go == null) return new { error = "GameObject not found" };
+            return MCPWire.IsVerbose(args) ? GetInfoVerbose(go) : GetInfoDense(go);
+        }
 
+        /// <summary>
+        /// Dense info: nothing the reader can't reconstruct is dropped. Omitted when redundant:
+        /// local transform (== world for root objects), lossyScale (== scale when unparented and
+        /// unscaled), layerIndex / childCount / parent (derivable from layer, children, path),
+        /// fullType (only non-UnityEngine namespaces are listed, once), enabled (only disabled
+        /// components are listed). Default-valued flags (active, static, Untagged) are omitted.
+        /// </summary>
+        private static Dictionary<string, object> GetInfoDense(GameObject go)
+        {
+            var t = go.transform;
+            var info = new Dictionary<string, object>
+            {
+                { "name", go.name },
+                { "instanceId", MCPObjectId.Get(go) },
+                { "path", MCPWire.HierarchyPath(t) },
+            };
+            if (!go.activeSelf) info["active"] = false;
+            if (go.activeSelf && !go.activeInHierarchy) info["activeInHierarchy"] = false;
+            if (go.isStatic) info["isStatic"] = true;
+            if (!go.CompareTag("Untagged")) info["tag"] = go.tag;
+            if (go.layer != 0) info["layer"] = LayerMask.LayerToName(go.layer);
+
+            info["position"] = MCPWire.Vec(t.position);
+            info["rotation"] = MCPWire.Vec(t.eulerAngles);
+            info["scale"] = MCPWire.Vec(t.localScale);
+            if (t.parent != null)
+            {
+                if (t.localPosition != t.position) info["localPosition"] = MCPWire.Vec(t.localPosition);
+                if (t.localRotation != t.rotation) info["localRotation"] = MCPWire.Vec(t.localEulerAngles);
+            }
+            if (t.lossyScale != t.localScale) info["lossyScale"] = MCPWire.Vec(t.lossyScale);
+
+            var components = new List<string>();
+            var disabled = new List<string>();
+            var namespaces = new Dictionary<string, object>();
+            var occurrences = new Dictionary<string, int>();
+            foreach (var comp in go.GetComponents<Component>())
+            {
+                if (comp == null) { components.Add("(Missing Script)"); continue; }
+                var type = comp.GetType();
+                string name = type.Name;
+                components.Add(name);
+                occurrences[name] = occurrences.TryGetValue(name, out int n) ? n + 1 : 1;
+                // Duplicate component types are told apart by occurrence: "AudioSource#2".
+                if (comp is Behaviour b && !b.enabled)
+                    disabled.Add(occurrences[name] > 1 ? $"{name}#{occurrences[name]}" : name);
+                string ns = type.Namespace;
+                if (!string.IsNullOrEmpty(ns) && ns != "UnityEngine") namespaces[name] = ns;
+            }
+            info["components"] = components;
+            if (disabled.Count > 0) info["disabledComponents"] = disabled;
+            if (namespaces.Count > 0) info["componentNamespaces"] = namespaces;
+
+            if (t.childCount > 0)
+            {
+                var children = new List<string>(t.childCount);
+                for (int i = 0; i < t.childCount; i++) children.Add(t.GetChild(i).name);
+                info["children"] = children;
+            }
+            return info;
+        }
+
+        /// <summary>The pre-dense shape, kept for verbose:true.</summary>
+        private static Dictionary<string, object> GetInfoVerbose(GameObject go)
+        {
             var components = new List<Dictionary<string, object>>();
             foreach (var comp in go.GetComponents<Component>())
             {
@@ -169,30 +236,30 @@ namespace UnityMCP.Editor
 
             if (args.ContainsKey("position"))
             {
-                var v = DictToVector3(args["position"] as Dictionary<string, object>);
+                var v = DictToVector3(args["position"]);
                 if (local) go.transform.localPosition = v;
                 else go.transform.position = v;
             }
 
             if (args.ContainsKey("rotation"))
             {
-                var v = DictToVector3(args["rotation"] as Dictionary<string, object>);
+                var v = DictToVector3(args["rotation"]);
                 if (local) go.transform.localEulerAngles = v;
                 else go.transform.eulerAngles = v;
             }
 
             if (args.ContainsKey("scale"))
             {
-                go.transform.localScale = DictToVector3(args["scale"] as Dictionary<string, object>);
+                go.transform.localScale = DictToVector3(args["scale"]);
             }
 
             return new Dictionary<string, object>
             {
                 { "success", true },
                 { "name", go.name },
-                { "position", Vector3ToDict(go.transform.position) },
-                { "rotation", Vector3ToDict(go.transform.eulerAngles) },
-                { "scale", Vector3ToDict(go.transform.localScale) },
+                { "position", MCPWire.Vec(go.transform.position) },
+                { "rotation", MCPWire.Vec(go.transform.eulerAngles) },
+                { "scale", MCPWire.Vec(go.transform.localScale) },
             };
         }
 
@@ -227,27 +294,17 @@ namespace UnityMCP.Editor
             return null;
         }
 
-        public static string GetHierarchyPath(GameObject go)
-        {
-            string path = go.name;
-            var parent = go.transform.parent;
-            while (parent != null)
-            {
-                path = parent.name + "/" + path;
-                parent = parent.parent;
-            }
-            return path;
-        }
+        public static string GetHierarchyPath(GameObject go) => MCPWire.HierarchyPath(go.transform);
 
-        public static Vector3 DictToVector3(Dictionary<string, object> dict)
-        {
-            if (dict == null) return Vector3.zero;
-            float x = dict.ContainsKey("x") ? Convert.ToSingle(dict["x"]) : 0;
-            float y = dict.ContainsKey("y") ? Convert.ToSingle(dict["y"]) : 0;
-            float z = dict.ContainsKey("z") ? Convert.ToSingle(dict["z"]) : 0;
-            return new Vector3(x, y, z);
-        }
+        /// <summary>
+        /// Read a Vector3 argument given as {x,y,z} or [x,y,z]. Null (argument absent) is
+        /// Vector3.zero, as before; any other unreadable value throws instead of silently
+        /// becoming zero (which is what an echoed [x,y,z] array used to do).
+        /// </summary>
+        public static Vector3 DictToVector3(object value) =>
+            value == null ? Vector3.zero : MCPArgs.ToVector3(value, "vector");
 
+        /// <summary>Legacy {x,y,z} object form (verbose responses). Dense responses use MCPWire.Vec.</summary>
         public static Dictionary<string, object> Vector3ToDict(Vector3 v)
         {
             return new Dictionary<string, object> { { "x", v.x }, { "y", v.y }, { "z", v.z } };

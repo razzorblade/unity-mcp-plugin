@@ -85,35 +85,20 @@ namespace UnityMCP.Editor
             if (so == null)
                 return new { error = $"ScriptableObject not found at '{path}'" };
 
-            var serialized = new SerializedObject(so);
-            var properties = new List<Dictionary<string, object>>();
+            // Shared reader: typed values (vectors used to be culture-formatted strings such as
+            // "(1,5, 2)" on decimal-comma locales), nested arrays/structs, propertyPath drill-down.
+            string propertyPath = args.ContainsKey("propertyPath") ? args["propertyPath"]?.ToString() : null;
+            var read = MCPPropertyReader.FromArgs(args).Read(new SerializedObject(so), propertyPath, skipScript: true);
+            if (read.ContainsKey("error")) return read;
 
-            var prop = serialized.GetIterator();
-            if (prop.NextVisible(true))
-            {
-                do
-                {
-                    if (prop.name == "m_Script") continue;
-
-                    properties.Add(new Dictionary<string, object>
-                    {
-                        { "name", prop.name },
-                        { "displayName", prop.displayName },
-                        { "type", prop.propertyType.ToString() },
-                        { "value", GetPropertyValue(prop) },
-                        { "isArray", prop.isArray },
-                        { "depth", prop.depth },
-                    });
-                } while (prop.NextVisible(false));
-            }
-
-            return new Dictionary<string, object>
+            var result = new Dictionary<string, object>
             {
                 { "path", path },
                 { "type", so.GetType().FullName },
                 { "name", so.name },
-                { "properties", properties },
             };
+            foreach (var kv in read) result[kv.Key] = kv.Value;
+            return result;
         }
 
         // ─── Set ScriptableObject Field ───
@@ -155,7 +140,7 @@ namespace UnityMCP.Editor
                 { "success", true },
                 { "path", path },
                 { "field", fieldName },
-                { "value", GetPropertyValue(prop) },
+                { "value", MCPPropertyReader.Leaf(prop, verbose: false) },
             };
         }
 
@@ -209,27 +194,6 @@ namespace UnityMCP.Editor
         }
 
         // ─── Helpers ───
-
-        private static object GetPropertyValue(SerializedProperty prop)
-        {
-            switch (prop.propertyType)
-            {
-                case SerializedPropertyType.Integer: return prop.intValue;
-                case SerializedPropertyType.Boolean: return prop.boolValue;
-                case SerializedPropertyType.Float: return prop.floatValue;
-                case SerializedPropertyType.String: return prop.stringValue;
-                case SerializedPropertyType.Enum: return prop.enumNames[prop.enumValueIndex];
-                case SerializedPropertyType.ObjectReference:
-                    return prop.objectReferenceValue != null ? prop.objectReferenceValue.name : null;
-                case SerializedPropertyType.Vector2:
-                    return $"({prop.vector2Value.x}, {prop.vector2Value.y})";
-                case SerializedPropertyType.Vector3:
-                    return $"({prop.vector3Value.x}, {prop.vector3Value.y}, {prop.vector3Value.z})";
-                case SerializedPropertyType.Color:
-                    return $"({prop.colorValue.r}, {prop.colorValue.g}, {prop.colorValue.b}, {prop.colorValue.a})";
-                default: return prop.propertyType.ToString();
-            }
-        }
 
         private static bool SetPropertyValue(SerializedProperty prop, object value)
         {
