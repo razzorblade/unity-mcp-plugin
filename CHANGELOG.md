@@ -2,6 +2,36 @@
 
 All notable changes to this package will be documented in this file.
 
+## [Unreleased]
+
+Companion to the server's FishNet tools (`unity_fishnet_*`).
+
+### Added: Fish-Networking (FishNet) integration
+18 `fishnet/*` routes for FishNet 4.x, so everyday networking work no longer needs `execute-code` snippets. They compile only when FishNet is installed as the `com.firstgeargames.fishnet` package (asmdef `versionDefine` → `FISHNET_INSTALLED`). Without it, every route returns a "not installed" error with the install URL. For a copy imported into `Assets/`, add `FISHNET_INSTALLED` to the scripting define symbols.
+- **Edit Mode setup** (every scene change is Undo-tracked; invalid arguments fail before anything changes):
+  - `setup-network-manager` creates a NetworkManager with a TransportManager and transport (Tugboat by default, or any `Transport` type by name). It assigns the spawnable prefabs and can add a PlayerSpawner with spawn points and FishNet's other managers. It refuses to add a second manager unless `allowMultiple` is set.
+  - `configure-transport` reads or changes port, client address, max clients and bind addresses. It works on any transport through FishNet's `Transport` API. In Edit Mode it returns the full serialized settings.
+  - `add-network-object` adds a NetworkObject, and optionally a NetworkTransform, to a scene object or a prefab root, and applies its settings (`isNetworked`, `isSpawnable`, `isGlobal`, `initializeOrder`, `preventDespawnOnDisconnect`, `defaultDespawnType`). It is idempotent.
+  - `list-prefabs`, `refresh-prefabs` and `register-prefab` manage the spawnable collection. For `DefaultPrefabObjects`, registering regenerates the collection and verifies the prefab was picked up, instead of adding an entry the generator would wipe.
+- **Inspection** in both modes:
+  - `status` shows every NetworkManager with its state, transport, port and prefab collection. In Play Mode it adds clients, spawned counts, tick and RTT.
+  - `list-network-objects` lists scene NetworkObjects offline and server- or client-spawned objects at runtime.
+  - `get-network-object` shows settings, behaviours and **live SyncType values** (SyncVar, SyncList, SyncDictionary, SyncHashSet, SyncTimer, SyncStopwatch), plus ObjectId, owner and observers at runtime.
+- **Play Mode session control**:
+  - `start` (host/server/client) is a deferred route. It answers once the server is listening and the client is authenticated, or reports a timeout (`waitSeconds`, default 5).
+  - `stop` and `list-connections`.
+  - `spawn`: pooled, by name, asset path or runtime prefabId, optionally owned by a client, and refuses unregistered prefabs up front.
+  - `despawn`, `set-ownership` and `kick`.
+  - `load-scene` and `unload-scene` go through FishNet's SceneManager, globally or per connection, and check Build Settings first.
+- Self-test gains a `fishnet` case.
+
+### Verified
+- Compiles with 0 errors and no new warnings on Unity 6000.0.79f1, 6000.3.21f1 and 6000.5.1f1 with FishNet 4.7.3, and without FishNet. Route registry: 342 → 360 routes (`--check` clean).
+- A batch-mode harness on 6000.0.79f1 ran 40 checks against the real handlers, all passing.
+  - Edit Mode: the setup and inspection flows plus their error paths.
+  - Play Mode: a live Tugboat host session covering the deferred start, PlayerSpawner, spawning by name and by prefabId with an owner, SyncVar/SyncList/SyncDictionary values read back from a spawned object, removing and giving ownership, despawn, a FishNet scene load that reached the client, unload and stop.
+  - The bridge does not run in batch mode, so HTTP was not exercised.
+
 ## [2.41.0] - 2026-09-25
 
 Companion to server **2.37.0** (token-budget paging). Every response is read by an LLM, so bytes are tokens: the read endpoints now answer in dense JSON that drops only what the reader can reconstruct. No information is removed. `verbose:true` restores the previous shape on every endpoint listed below.

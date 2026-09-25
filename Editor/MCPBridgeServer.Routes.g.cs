@@ -9,7 +9,7 @@ namespace UnityMCP.Editor
 {
     public static partial class MCPBridgeServer
     {
-        /// <summary>Every route the bridge can dispatch (342 routes).</summary>
+        /// <summary>Every route the bridge can dispatch (360 routes).</summary>
         internal static readonly string[] GeneratedRoutes = new string[]
         {
             "_meta/routes",
@@ -103,6 +103,24 @@ namespace UnityMCP.Editor
             "editorprefs/delete",
             "editorprefs/get",
             "editorprefs/set",
+            "fishnet/add-network-object",
+            "fishnet/configure-transport",
+            "fishnet/despawn",
+            "fishnet/get-network-object",
+            "fishnet/kick",
+            "fishnet/list-connections",
+            "fishnet/list-network-objects",
+            "fishnet/list-prefabs",
+            "fishnet/load-scene",
+            "fishnet/refresh-prefabs",
+            "fishnet/register-prefab",
+            "fishnet/set-ownership",
+            "fishnet/setup-network-manager",
+            "fishnet/spawn",
+            "fishnet/start",
+            "fishnet/status",
+            "fishnet/stop",
+            "fishnet/unload-scene",
             "gameobject/create",
             "gameobject/delete",
             "gameobject/info",

@@ -85,6 +85,7 @@ This package runs a lightweight HTTP bridge inside the Unity Editor on `localhos
 **Multiplayer (conditional on MPPM package):**
 
 - **MPPM Scenarios** — List, activate, start, stop multiplayer playmode scenarios; get status and player info (requires `com.unity.multiplayer.playmode`)
+- **FishNet** — 18 `fishnet/*` commands (requires FishNet 4.x installed as the `com.firstgeargames.fishnet` package). In Edit Mode: create a NetworkManager with its transport and PlayerSpawner, add NetworkObjects to scene objects and prefabs, and manage the spawnable prefab collection. In Play Mode: start host, server or client (the call waits until connected), list connections, spawn/despawn, transfer ownership, kick, and load scenes through FishNet. Any NetworkObject can be inspected with its live SyncVar/SyncList/SyncDictionary values.
 - **Virtual Players** — Each virtual player advertises itself as one (`isVirtualPlayer`, `mainProjectPath`), so the MCP server keeps auto-selecting the main editor. Virtual players still start their own bridge (one port each from 7890–7899) unless you untick **Start on Virtual Players** in the Dashboard. Untick it if you run several projects with MPPM and ports run short.
 
 **Infrastructure:**
@@ -153,6 +154,7 @@ Some features activate automatically when their corresponding packages are detec
 | `com.unity.visualeffectgraph` | VFX Graph listing and opening |
 | `com.unity.inputsystem` | Input Action maps and bindings inspection |
 | `com.unity.multiplayer.playmode` | MPPM scenario management (list, activate, start/stop, status) |
+| FishNet 4.x (`com.firstgeargames.fishnet`) | NetworkManager/transport setup, NetworkObjects, spawnable prefabs, SyncType inspection, and live sessions: start/stop host/server/client, spawn/despawn, ownership, kick, networked scene loads |
 | Amplify Shader Editor (Asset Store) | Amplify shader listing, inspection, opening |
 
 ## Configuration

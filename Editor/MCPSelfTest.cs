@@ -243,6 +243,7 @@ namespace UnityMCP.Editor
             { "terrain",        TestTerrain },
             { "amplify",        TestAmplify },
             { "constraint",     TestConstraint },
+            { "fishnet",        TestFishNet },
             { "graphics",       TestGraphics },
             { "memoryprofiler", TestMemoryProfiler },
             { "navigation",     TestNavigation },
@@ -1216,6 +1217,26 @@ namespace UnityMCP.Editor
             }
 #else
             return null; // ProBuilder not installed — pass (handler not compiled)
+#endif
+        }
+
+        // --- FishNet ---
+        private static string TestFishNet()
+        {
+#if FISHNET_INSTALLED
+            try
+            {
+                var result = MCPFishNetCommands.GetStatus(EmptyArgs()) as Dictionary<string, object>;
+                if (result == null || !result.ContainsKey("fishnetVersion"))
+                    return "FishNet.GetStatus returned no fishnetVersion";
+                return null;
+            }
+            catch (Exception ex)
+            {
+                return $"FishNet.GetStatus threw: {ex.Message}";
+            }
+#else
+            return null; // FishNet not installed — pass (handler returns "not installed")
 #endif
         }
 

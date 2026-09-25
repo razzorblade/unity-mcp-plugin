@@ -70,6 +70,7 @@ namespace UnityMCP.Editor
             _deferredRoutes = new Dictionary<string, Action<Dictionary<string, object>, Action<object>>>
         {
             { "testing/list-tests", MCPTestRunnerCommands.ListTests },
+            { "fishnet/start", MCPFishNetCommands.Start },
         };
 
         // ─── Capability handshake (unity-mcp-server PRs #32/#20) ───
@@ -1275,6 +1276,43 @@ namespace UnityMCP.Editor
                     return MCPProBuilderCommands.CenterPivot(ParseJson(body));
                 case "probuilder/export-mesh":
                     return MCPProBuilderCommands.ExportMesh(ParseJson(body));
+
+                // ─── Fish-Networking (FishNet) ───
+                case "fishnet/status":
+                    return MCPFishNetCommands.GetStatus(ParseJson(body));
+                case "fishnet/setup-network-manager":
+                    return MCPFishNetCommands.SetupNetworkManager(ParseJson(body));
+                case "fishnet/configure-transport":
+                    return MCPFishNetCommands.ConfigureTransport(ParseJson(body));
+                case "fishnet/add-network-object":
+                    return MCPFishNetCommands.AddNetworkObject(ParseJson(body));
+                case "fishnet/get-network-object":
+                    return MCPFishNetCommands.GetNetworkObject(ParseJson(body));
+                case "fishnet/list-network-objects":
+                    return MCPFishNetCommands.ListNetworkObjects(ParseJson(body));
+                case "fishnet/list-prefabs":
+                    return MCPFishNetCommands.ListPrefabs(ParseJson(body));
+                case "fishnet/refresh-prefabs":
+                    return MCPFishNetCommands.RefreshPrefabs(ParseJson(body));
+                case "fishnet/register-prefab":
+                    return MCPFishNetCommands.RegisterPrefab(ParseJson(body));
+                // fishnet/start is handled via the deferred path (waits for the connection)
+                case "fishnet/stop":
+                    return MCPFishNetCommands.Stop(ParseJson(body));
+                case "fishnet/list-connections":
+                    return MCPFishNetCommands.ListConnections(ParseJson(body));
+                case "fishnet/spawn":
+                    return MCPFishNetCommands.Spawn(ParseJson(body));
+                case "fishnet/despawn":
+                    return MCPFishNetCommands.Despawn(ParseJson(body));
+                case "fishnet/set-ownership":
+                    return MCPFishNetCommands.SetOwnership(ParseJson(body));
+                case "fishnet/kick":
+                    return MCPFishNetCommands.Kick(ParseJson(body));
+                case "fishnet/load-scene":
+                    return MCPFishNetCommands.LoadScene(ParseJson(body));
+                case "fishnet/unload-scene":
+                    return MCPFishNetCommands.UnloadScene(ParseJson(body));
 
                 // ─── Screenshot / Scene View ───
                 case "screenshot/game":

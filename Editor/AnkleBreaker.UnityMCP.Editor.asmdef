@@ -8,7 +8,8 @@
     "UMA_Core_Editor",
     "Unity.ProBuilder",
     "Unity.ProBuilder.Editor",
-    "Unity.ProBuilder.Csg"
+    "Unity.ProBuilder.Csg",
+    "FishNet.Runtime"
   ],
   "includePlatforms": [
     "Editor"
@@ -24,6 +25,11 @@
       "name": "com.unity.probuilder",
       "expression": "5.1.0",
       "define": "PROBUILDER_INSTALLED"
+    },
+    {
+      "name": "com.firstgeargames.fishnet",
+      "expression": "4.0.0",
+      "define": "FISHNET_INSTALLED"
     }
   ],
   "noEngineReferences": false
