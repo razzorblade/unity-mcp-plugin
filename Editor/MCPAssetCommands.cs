@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using UnityEditor;
+using UnityEditor.Compilation;
 using UnityEngine;
 
 namespace UnityMCP.Editor
@@ -130,6 +131,47 @@ namespace UnityMCP.Editor
             AssetDatabase.ImportAsset(MCPAssetSafety.ToAssetDatabasePath(dest));
 
             return new { success = true, importedPath = dest };
+        }
+
+        /// <summary>
+        /// Import every change made to project files outside Unity (IDE, agent file tools, git)
+        /// and compile scripts when any changed — the explicit Assets > Refresh (Ctrl+R).
+        ///
+        /// Unity's Auto Refresh only scans on focus regain; an explicit refresh has no focus
+        /// requirement and runs as soon as the main thread ticks, which it keeps doing while the
+        /// editor is in the background. Compilation and the domain reload that follows finish
+        /// AFTER this returns: callers watch ping (isCompiling, epoch) to know when they are done.
+        /// </summary>
+        public static object Refresh(Dictionary<string, object> args)
+        {
+            bool forceRecompile = MCPArgs.GetBool(args, "forceRecompile", false);
+
+            var timer = System.Diagnostics.Stopwatch.StartNew();
+            AssetDatabase.Refresh();
+            if (forceRecompile)
+                CompilationPipeline.RequestScriptCompilation();
+            timer.Stop();
+
+            // RequestScriptCompilation starts on the next tick, so isCompiling can still be false.
+            bool compiling = EditorApplication.isCompiling || forceRecompile;
+            var result = new Dictionary<string, object>
+            {
+                { "success", true },
+                { "compiling", compiling },
+                { "refreshMs", timer.ElapsedMilliseconds },
+                { "epoch", MCPEditorHealth.Epoch },
+            };
+            if (compiling)
+            {
+                result["next"] = "Scripts are compiling; a domain reload follows on success. Done when ping shows " +
+                                 "isCompiling=false and a new epoch; if the epoch is unchanged, check compilation/errors.";
+            }
+            else if (EditorApplication.isPlaying)
+            {
+                result["note"] = "In Play Mode, changed scripts compile according to Preferences > General > " +
+                                 "Script Changes While Playing (by default after Play Mode exits).";
+            }
+            return result;
         }
 
         public static object Delete(Dictionary<string, object> args)

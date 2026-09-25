@@ -9,7 +9,7 @@ namespace UnityMCP.Editor
 {
     public static partial class MCPBridgeServer
     {
-        /// <summary>Every route the bridge can dispatch (360 routes).</summary>
+        /// <summary>Every route the bridge can dispatch (361 routes).</summary>
         internal static readonly string[] GeneratedRoutes = new string[]
         {
             "_meta/routes",
@@ -77,6 +77,7 @@ namespace UnityMCP.Editor
             "asset/import",
             "asset/instantiate-prefab",
             "asset/list",
+            "asset/refresh",
             "audio/create-source",
             "audio/info",
             "audio/set-global",

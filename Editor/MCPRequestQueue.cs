@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Threading;
+using UnityEditor;
 using UnityEngine;
 
 namespace UnityMCP.Editor
@@ -127,8 +128,16 @@ namespace UnityMCP.Editor
         /// <summary>Action currently executing on the main thread, or null. Any thread.</summary>
         public static string CurrentActionName => Volatile.Read(ref _currentActionName);
 
-        static MCPRequestQueue()
+        // NOT a static constructor: the type initializer runs on whichever thread touches the
+        // class first, and after a domain reload that is often an HTTP pool thread (off-thread
+        // ping reads TotalQueuedCount / CurrentActionName before the first editor tick). Unity
+        // throws on log-callback registration off the main thread, and a failed type initializer
+        // poisons the queue for the whole domain. InitializeOnLoadMethod always runs on the main
+        // thread; the field initializers left in the type initializer are thread-agnostic.
+        [InitializeOnLoadMethod]
+        private static void RegisterLogCapture()
         {
+            Application.logMessageReceived -= CaptureLog; // idempotent
             Application.logMessageReceived += CaptureLog;
         }
 

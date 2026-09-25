@@ -4,7 +4,21 @@ All notable changes to this package will be documented in this file.
 
 ## [Unreleased]
 
-Companion to the server's FishNet tools (`unity_fishnet_*`).
+Companion to the server's FishNet tools (`unity_fishnet_*`) and `unity_asset_refresh`.
+
+### Fixed
+- **`UnityException: SetLogCallbackDefined can only be called from the main thread`**, followed by a `TypeInitializationException` for `MCPRequestQueue`. The queue registered its console-capture callback in its static constructor, and that constructor runs on whichever thread touches the class first. After a domain reload that was often an HTTP pool thread: a ping reads the queue counters off-thread, before the first editor tick. Unity rejected the registration, and the failed type initializer left the queue unusable until the next reload. The callback is now registered from an `[InitializeOnLoadMethod]`, which always runs on the main thread, so the type initializer no longer calls Unity APIs.
+
+### Added: `asset/refresh`
+- Runs Assets > Refresh (Ctrl+R) on demand. It imports files changed outside Unity (IDE, an agent's file tools, git) and compiles changed scripts, with `forceRecompile` to recompile anyway. It returns `compiling` and the domain `epoch`, so a caller can tell when the compile and domain reload have finished. Unity's Auto Refresh only runs when the editor window regains focus. An explicit refresh has no focus requirement: it runs on the next main-thread tick, and the editor keeps ticking while unfocused (measured at about 10 Hz in the background). Route registry: 360 → 361 routes.
+
+### Verified: refresh and queue fix
+- A batch-mode probe on 6000.0.79f1 and 6000.5.1f1 checks five things:
+  - The queue's type initializer runs from a background thread without error. The same check fails against the previous code with the reported exception.
+  - Per-ticket console capture still records a warning.
+  - A refresh with no changes reports `compiling=false`.
+  - A refresh after writing a `.cs` file reports `compiling=true`.
+  - The domain reloads with the new class compiled.
 
 ### Added: Fish-Networking (FishNet) integration
 18 `fishnet/*` routes for FishNet 4.x, so everyday networking work no longer needs `execute-code` snippets. They compile only when FishNet is installed as the `com.firstgeargames.fishnet` package (asmdef `versionDefine` → `FISHNET_INSTALLED`). Without it, every route returns a "not installed" error with the install URL. For a copy imported into `Assets/`, add `FISHNET_INSTALLED` to the scripting define symbols.

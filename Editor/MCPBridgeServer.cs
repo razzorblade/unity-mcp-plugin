@@ -826,6 +826,8 @@ namespace UnityMCP.Editor
                     return MCPAssetCommands.List(ParseJson(body));
                 case "asset/import":
                     return MCPAssetCommands.Import(ParseJson(body));
+                case "asset/refresh":
+                    return MCPAssetCommands.Refresh(ParseJson(body));
                 case "asset/delete":
                     return MCPAssetCommands.Delete(ParseJson(body));
                 case "asset/create-prefab":
