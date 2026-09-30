@@ -47,6 +47,7 @@ namespace UnityMCP.Editor
         private Label _portAutoInfo;
         private Label _portRestartHint;
         private Toggle _mppmToggle;
+        private Toggle _dialogClickToggle;
 
         private string _statusSig, _newsSig, _queueSig, _contextSig, _agentSig, _actionSig, _categorySig;
         private string _expandedTestCategory;
@@ -751,6 +752,18 @@ namespace UnityMCP.Editor
             _mppmToggle.RegisterValueChangedCallback(OnMppmToggled);
             box.Add(_mppmToggle);
 
+            Text(box, "Dialogs", "ab-section-heading");
+
+            _dialogClickToggle = new Toggle("Let AI Answer Blocking Dialogs")
+            {
+                value = MCPSettingsManager.AllowDialogClick,
+                tooltip = "When a native dialog (e.g. \"Save / Don't Save / Cancel\") blocks the editor, MCP " +
+                          "clients are told its text and buttons. When on, they may also press a button — " +
+                          "including ones that discard unsaved changes. Every click is logged. Windows editor only.",
+            };
+            _dialogClickToggle.RegisterValueChangedCallback(OnDialogClickToggled);
+            box.Add(_dialogClickToggle);
+
             var resetBtn = new Button(OnResetClicked) { text = "Reset All Settings to Defaults" };
             resetBtn.style.marginTop = 8;
             box.Add(resetBtn);
@@ -760,6 +773,7 @@ namespace UnityMCP.Editor
         private void OnNewsToggled(ChangeEvent<bool> evt) => MCPNewsService.Enabled = evt.newValue;
         private void OnManualPortToggled(ChangeEvent<bool> evt) => MCPSettingsManager.UseManualPort = evt.newValue;
         private void OnMppmToggled(ChangeEvent<bool> evt) => MCPSettingsManager.StartOnVirtualPlayers = evt.newValue;
+        private void OnDialogClickToggled(ChangeEvent<bool> evt) => MCPSettingsManager.AllowDialogClick = evt.newValue;
 
         private void OnPortChanged(ChangeEvent<int> evt)
         {
@@ -805,6 +819,7 @@ namespace UnityMCP.Editor
             }
 
             _mppmToggle.SetValueWithoutNotify(MCPSettingsManager.StartOnVirtualPlayers);
+            _dialogClickToggle.SetValueWithoutNotify(MCPSettingsManager.AllowDialogClick);
         }
 
         // ─── Version footer ──────────────────────────────────────────────

@@ -84,6 +84,7 @@ namespace UnityMCP.Editor
                 { "epoch", Epoch },
             };
             Volatile.Write(ref _identity, identity);
+            MCPDialogProbe.CaptureMainThread();
             Tick();
         }
 
@@ -114,14 +115,22 @@ namespace UnityMCP.Editor
         }
 
         /// <summary>Milliseconds since the main thread last ticked. Any thread.</summary>
-        public static long MainThreadStallMs
+        public static long MainThreadStallMs => StallMsSince(LastTickUtcTicks);
+
+        /// <summary>UTC ticks of the last main-thread tick — the start of the current stall. Any thread.</summary>
+        public static long LastTickUtcTicks => Interlocked.Read(ref _lastTickUtcTicks);
+
+        private static long StallMsSince(long lastTickUtcTicks)
         {
-            get
-            {
-                long last = Interlocked.Read(ref _lastTickUtcTicks);
-                if (last == 0) return 0;
-                return Math.Max(0, (DateTime.UtcNow.Ticks - last) / TimeSpan.TicksPerMillisecond);
-            }
+            if (lastTickUtcTicks == 0) return 0;
+            return Math.Max(0, (DateTime.UtcNow.Ticks - lastTickUtcTicks) / TimeSpan.TicksPerMillisecond);
+        }
+
+        /// <summary>Answer the dialog blocking the main thread. Any thread (see MCPDialogProbe.Click).</summary>
+        public static MCPDialogProbe.ClickResult ClickDialog(string dialogId, string button, string agentId)
+        {
+            long lastTick = LastTickUtcTicks;
+            return MCPDialogProbe.Click(dialogId, button, agentId, StallMsSince(lastTick), lastTick);
         }
 
         /// <summary>
@@ -157,8 +166,11 @@ namespace UnityMCP.Editor
         private static void AppendLiveState(Dictionary<string, object> target)
         {
             var flags = (StateFlags)Volatile.Read(ref _flags);
-            long stallMs = MainThreadStallMs;
+            long lastTick = LastTickUtcTicks;
+            long stallMs = StallMsSince(lastTick);
             string executing = MCPRequestQueue.CurrentActionName;
+            long executingTicketId = MCPRequestQueue.ExecutingTicketId;
+            var dialog = MCPDialogProbe.Current(stallMs, lastTick);
 
             target["isPlaying"]          = (flags & StateFlags.Playing) != 0;
             target["isPaused"]           = (flags & StateFlags.Paused) != 0;
@@ -168,14 +180,23 @@ namespace UnityMCP.Editor
             target["applicationFocused"] = (flags & StateFlags.Focused) != 0;
             target["mainThreadStallMs"]  = stallMs;
             target["executing"]          = executing;
+            // Lets a poller tell "MY command raised this dialog" from "I am queued behind it".
+            if (executing != null && executingTicketId > 0) target["executingTicketId"] = executingTicketId;
+            if (dialog != null) target["dialog"] = dialog.ToWire(stallMs);
 
-            string reason = BusyReason(flags, stallMs, executing);
+            string reason = BusyReason(flags, stallMs, executing, dialog);
             target["busy"] = reason != null;
             target["busyReason"] = reason;
         }
 
-        private static string BusyReason(StateFlags flags, long stallMs, string executing)
+        private static string BusyReason(StateFlags flags, long stallMs, string executing, MCPDialogProbe.DialogInfo dialog)
         {
+            // A named dialog is the most precise answer, even inside an executing MCP command
+            // (usually that command raised it).
+            if (dialog != null)
+                return dialog.Kind == MCPDialogProbe.KindProgress
+                    ? $"long editor operation (progress window \"{dialog.Title}\")"
+                    : $"blocked by dialog \"{dialog.Title}\"";
             if (executing != null && stallMs >= BusyThresholdMs)
                 return $"executing MCP command '{executing}'";
             if ((flags & StateFlags.Compiling) != 0) return "compiling scripts";

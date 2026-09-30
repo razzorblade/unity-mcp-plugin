@@ -4,7 +4,45 @@ All notable changes to this package will be documented in this file.
 
 ## [Unreleased]
 
-Companion to the server's FishNet tools (`unity_fishnet_*`) and `unity_asset_refresh`.
+Companion to the server's FishNet tools (`unity_fishnet_*`), `unity_asset_refresh` and `unity_editor_dialog_click`.
+
+### Added: blocking-dialog detection and answering (protocol 3)
+- **The native dialog blocking the main thread is named.** A dialog raised while an MCP command runs (e.g. "Scene(s) Have Been Modified — Save / Don't Save / Cancel" behind a menu item, or `DisplayDialog` in user code) parks the main thread on a human click. `ping` and every `queue/status` now carry `dialog`: `{ id, kind, title, message, buttons, defaultButton, cancelButton, clickable, blockedMs }`. `busyReason` becomes `blocked by dialog "<title>"`, and `executingTicketId` names the command the main thread is inside.
+  - **How it detects:** `MCPDialogProbe` runs on the HTTP pool threads, the only managed threads still running during a modal loop, and only once the main thread has stalled for 1s. Results are cached per stall, so a healthy editor pays nothing.
+    - It walks the UI thread's top-level windows with `FindWindowEx`, so no `EnumWindows` callback runs on a pool thread.
+    - Unity's dialogs are standard `#32770` dialogs. Buttons have fixed ids: 1 = primary, 2 = cancel/Esc, 3 = alternate.
+    - Titles and buttons are read without sending window messages. The message is in a read-only Edit control, which is read with a 250ms `SendMessageTimeout`.
+  - **Window kinds:**
+    - `dialog`: clickable.
+    - `filePanel`: native open/save panels; only Cancel is offered.
+    - `window`: modal windows Unity draws itself (`ShowModalUtility`); title only, not clickable.
+    - `progress`: never a question.
+- **`POST dialog/click {dialogId, button}`** presses a button off the main thread. It posts `WM_COMMAND`/`BN_CLICKED` to the dialog, which works whether or not the dialog is focused, and waits up to 2s for the dialog to close.
+  - `button` is a label (case-insensitive, `&` mnemonics ignored) or a role (`primary`, `cancel`, `alternate`, `default`).
+  - A `dialogId` that no longer matches the open dialog is refused with the current one (409), so a chained dialog is never answered unread. Other refusals: no dialog → 404, unknown button → 400, not clickable → 409, disabled → 403, non-Windows editor → 501.
+  - Every click is logged to the Console and recorded in the action history as `dialog/click`.
+- **Dashboard → Settings → Dialogs → "Let AI Answer Blocking Dialogs"** (project-scoped, on by default). When off, dialogs are still reported, but a human has to answer them.
+- Windows editor only. Other platforms keep the stall-only report.
+- Protocol version 2 → 3. `dialog/click` is handled beside the queue endpoints, not in the route switch, so the route registry is unchanged.
+
+### Verified: dialogs
+- Compiles with 0 errors on 6000.0.79f1, 6000.3.21f1 and 6000.5.1f1.
+- An interactive probe harness raised real dialogs on all three editors and read and answered them from a background thread through the same calls the bridge makes:
+  - the scenes-modified prompt (`SaveCurrentModifiedScenesIfUserWantsTo`), with its full message;
+  - `DisplayDialog` and `DisplayDialogComplex`;
+  - the opt-out variant: a third button in 6000.0, a checkbox in 6000.3+ that is reported as `optOut` and left unchanged;
+  - `SaveFilePanel`, where only Cancel is offered and "Save" is refused;
+  - a `ShowModalUtility` window, reported as `window` and not clickable.
+- Each dialog was detected about 1.1s after it opened. Every click closed its dialog in 25–42ms, and `DisplayDialog`/`DisplayDialogComplex` returned the chosen button's value.
+- Stale ids and unknown buttons were refused.
+- A progress bar (drawn on another thread) and a plain 2.5s main-thread stall reported no dialog.
+- On 6000.3 and 6000.5, Unity's own "Packages with Errors" prompt appeared at startup. `ping` reported it with its message and buttons, and `POST dialog/click` dismissed it over HTTP.
+- End to end, with the real MCP server over stdio and a 6000.0 editor over HTTP:
+  1. An `execute-code` call that raises the save prompt came back `paused` with the dialog.
+  2. A second command was cancelled behind the dialog within 10ms.
+  3. A stale id was refused.
+  4. "Cancel" returned the held command's real result (`false`, scene still dirty).
+  5. A repeat with "Don't Save" returned `true`.
 
 ### Fixed
 - **`UnityException: SetLogCallbackDefined can only be called from the main thread`**, followed by a `TypeInitializationException` for `MCPRequestQueue`. The queue registered its console-capture callback in its static constructor, and that constructor runs on whichever thread touches the class first. After a domain reload that was often an HTTP pool thread: a ping reads the queue counters off-thread, before the first editor tick. Unity rejected the registration, and the failed type initializer left the queue unusable until the next reload. The callback is now registered from an `[InitializeOnLoadMethod]`, which always runs on the main thread, so the type initializer no longer calls Unity APIs.

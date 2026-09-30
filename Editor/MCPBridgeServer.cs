@@ -80,7 +80,10 @@ namespace UnityMCP.Editor
         // v2: ping/health answered off the main thread with live editor state + epoch,
         //     queue/cancel, submit startTimeoutMs, editor health on queue/status,
         //     per-ticket Unity console capture, lighting bake routes.
-        internal const int ProtocolVersion = 2;
+        // v3: health snapshots name the native dialog blocking the main thread (`dialog`) and the
+        //     executing ticket (`executingTicketId`); POST dialog/click answers that dialog
+        //     off the main thread (Windows editor).
+        internal const int ProtocolVersion = 3;
 
         private static string _pluginVersion;
         private static string PluginVersion
@@ -194,6 +197,7 @@ namespace UnityMCP.Editor
 
             // Capture identity on the main thread so ping/health never need it again.
             MCPEditorHealth.Initialize(PluginVersion, ProtocolVersion);
+            MCPDialogProbe.ClickEnabled = MCPSettingsManager.AllowDialogClick;
 
             // Clean up stale entries before selecting a port
             MCPInstanceRegistry.CleanupStaleEntries();
@@ -329,6 +333,9 @@ namespace UnityMCP.Editor
         {
             // Publish liveness for the off-main-thread ping/health endpoints.
             MCPEditorHealth.Tick();
+
+            // Record dialog clicks made off-thread while the main thread was blocked.
+            MCPDialogProbe.FlushAudit();
 
             // 0. Manual-port restart retry (issue #10): the manual port can be
             //    briefly unbindable after a domain reload — retry on a short delay.
@@ -544,6 +551,13 @@ namespace UnityMCP.Editor
                     return;
                 }
 
+                // ═══ Dialog answering (off the main thread — it is the one being blocked) ═══
+                if (apiPath == "dialog/click")
+                {
+                    HandleDialogClick(response, agentId, body);
+                    return;
+                }
+
                 // ═══ Project Context endpoints (read-only, no queue needed) ═══
                 // Must run on the main thread: GetContextResponse reads EditorPrefs
                 // (main-thread-only), which made every context call throw HTTP 500
@@ -706,6 +720,59 @@ namespace UnityMCP.Editor
                 return;
             }
             SendJson(response, 200, result);
+        }
+
+        // ─── Dialog Click ───
+
+        private static void HandleDialogClick(HttpListenerResponse response, string agentId, string body)
+        {
+            string dialogId, button;
+            try
+            {
+                var args = ParseJson(body);
+                dialogId = args.TryGetValue("dialogId", out var d) ? d?.ToString() : null;
+                button   = args.TryGetValue("button", out var b) ? b?.ToString() : null;
+            }
+            catch (Exception ex)
+            {
+                SendJson(response, 400, new { error = $"Invalid JSON body: {ex.Message}" });
+                return;
+            }
+            if (string.IsNullOrEmpty(dialogId) || string.IsNullOrEmpty(button))
+            {
+                SendJson(response, 400, new { error = "Both 'dialogId' and 'button' are required (read them from the editor's `dialog` state)." });
+                return;
+            }
+
+            var result = MCPEditorHealth.ClickDialog(dialogId, button, agentId);
+            int status;
+            switch (result.Outcome)
+            {
+                case MCPDialogProbe.ClickOutcome.Clicked:       status = 200; break;
+                case MCPDialogProbe.ClickOutcome.Disabled:      status = 403; break;
+                case MCPDialogProbe.ClickOutcome.NoDialog:      status = 404; break;
+                case MCPDialogProbe.ClickOutcome.Mismatch:
+                case MCPDialogProbe.ClickOutcome.NotClickable:  status = 409; break;
+                case MCPDialogProbe.ClickOutcome.UnknownButton: status = 400; break;
+                case MCPDialogProbe.ClickOutcome.Unsupported:   status = 501; break;
+                default:                                        status = 500; break;
+            }
+
+            var payload = new Dictionary<string, object>();
+            if (result.Outcome == MCPDialogProbe.ClickOutcome.Clicked)
+            {
+                payload["clicked"]   = true;
+                payload["button"]    = result.Button.Label;
+                payload["dialog"]    = result.Dialog.Title;
+                payload["dismissed"] = result.Dismissed;
+            }
+            else
+            {
+                payload["error"] = result.Error;
+                if (result.Dialog != null)
+                    payload["current"] = result.Dialog.ToWire(MCPEditorHealth.MainThreadStallMs);
+            }
+            SendJson(response, status, payload);
         }
 
         // ─── Route Request (runs on main thread) ───

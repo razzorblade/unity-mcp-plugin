@@ -128,6 +128,13 @@ namespace UnityMCP.Editor
         /// <summary>Action currently executing on the main thread, or null. Any thread.</summary>
         public static string CurrentActionName => Volatile.Read(ref _currentActionName);
 
+        // Ticket of that action (0 otherwise) — tells a poller whether the dialog blocking the
+        // main thread was raised by ITS command or merely sits in front of it.
+        private static long _executingTicketId;
+
+        /// <summary>Ticket whose action is executing on the main thread, or 0. Any thread.</summary>
+        public static long ExecutingTicketId => Interlocked.Read(ref _executingTicketId);
+
         // NOT a static constructor: the type initializer runs on whichever thread touches the
         // class first, and after a domain reload that is often an HTTP pool thread (off-thread
         // ping reads TotalQueuedCount / CurrentActionName before the first editor tick). Unity
@@ -768,6 +775,7 @@ namespace UnityMCP.Editor
         private static void BeginExecution(RequestTicket ticket)
         {
             _captureTicket = ticket;
+            Interlocked.Exchange(ref _executingTicketId, ticket.TicketId);
             Volatile.Write(ref _currentActionName, ticket.ActionName ?? "unknown");
         }
 
@@ -775,6 +783,7 @@ namespace UnityMCP.Editor
         {
             _captureTicket = null;
             Volatile.Write(ref _currentActionName, null);
+            Interlocked.Exchange(ref _executingTicketId, 0);
         }
 
         private static bool IsReadOperation(string actionName)

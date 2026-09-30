@@ -186,6 +186,24 @@ namespace UnityMCP.Editor
             set => EditorPrefs.SetInt(ProjectPrefix + "ActionHistoryMaxEntries", value);
         }
 
+        // ─── Dialog answering (project-scoped) ───
+
+        /// <summary>
+        /// When true, MCP clients may press buttons on a native dialog that blocks the editor
+        /// (e.g. "Save / Don't Save / Cancel"). When false, the dialog is still reported but a
+        /// human has to answer it. Mirrored into <see cref="MCPDialogProbe.ClickEnabled"/>
+        /// because clicks are handled off the main thread, where EditorPrefs cannot be read.
+        /// </summary>
+        public static bool AllowDialogClick
+        {
+            get => EditorPrefs.GetBool(ProjectPrefix + "AllowDialogClick", true);
+            set
+            {
+                EditorPrefs.SetBool(ProjectPrefix + "AllowDialogClick", value);
+                MCPDialogProbe.ClickEnabled = value;
+            }
+        }
+
         // ─── Category Management (project-scoped) ───
 
         public static string[] GetAllCategoryNames() => AllCategories;
@@ -254,6 +272,7 @@ namespace UnityMCP.Editor
             ContextPath = "Assets/MCP/Context";
             ActionHistoryPersistence = false;
             ActionHistoryMaxEntries = 500;
+            AllowDialogClick = true;
             _enabledCategories = null;
             EditorPrefs.DeleteKey(ProjectPrefix + "EnabledCategories");
         }
