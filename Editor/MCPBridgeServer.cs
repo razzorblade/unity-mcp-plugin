@@ -83,7 +83,9 @@ namespace UnityMCP.Editor
         // v3: health snapshots name the native dialog blocking the main thread (`dialog`) and the
         //     executing ticket (`executingTicketId`); POST dialog/click answers that dialog
         //     off the main thread (Windows editor).
-        internal const int ProtocolVersion = 3;
+        // v4: POST editor/focus brings the editor to the foreground off the main thread (a background
+        //     editor is throttled), focuses the Game view and can hand the foreground back (Windows editor).
+        internal const int ProtocolVersion = 4;
 
         private static string _pluginVersion;
         private static string PluginVersion
@@ -198,6 +200,7 @@ namespace UnityMCP.Editor
             // Capture identity on the main thread so ping/health never need it again.
             MCPEditorHealth.Initialize(PluginVersion, ProtocolVersion);
             MCPDialogProbe.ClickEnabled = MCPSettingsManager.AllowDialogClick;
+            MCPWindowFocus.Enabled = MCPSettingsManager.AllowWindowFocus;
 
             // Clean up stale entries before selecting a port
             MCPInstanceRegistry.CleanupStaleEntries();
@@ -336,6 +339,7 @@ namespace UnityMCP.Editor
 
             // Record dialog clicks made off-thread while the main thread was blocked.
             MCPDialogProbe.FlushAudit();
+            MCPWindowFocus.FlushAudit();
 
             // 0. Manual-port restart retry (issue #10): the manual port can be
             //    briefly unbindable after a domain reload — retry on a short delay.
@@ -558,6 +562,13 @@ namespace UnityMCP.Editor
                     return;
                 }
 
+                // ═══ Window focus (off the main thread — a background editor's main thread is throttled) ═══
+                if (apiPath == "editor/focus")
+                {
+                    HandleEditorFocus(response, agentId, body);
+                    return;
+                }
+
                 // ═══ Project Context endpoints (read-only, no queue needed) ═══
                 // Must run on the main thread: GetContextResponse reads EditorPrefs
                 // (main-thread-only), which made every context call throw HTTP 500
@@ -774,6 +785,69 @@ namespace UnityMCP.Editor
             }
             SendJson(response, status, payload);
         }
+
+        // ─── Editor Focus ───
+
+        /// <summary>Wait for the Game view step; the main thread runs at full rate once the editor is in front.</summary>
+        private const int GameViewFocusTimeoutMs = 3000;
+
+        private static void HandleEditorFocus(HttpListenerResponse response, string agentId, string body)
+        {
+            bool gameView = true, returnFocus = false;
+            int returnAfterMs = 0;
+            try
+            {
+                var args = ParseJson(body) ?? new Dictionary<string, object>();
+                if (args.TryGetValue("gameView", out var g) && g != null) gameView = Convert.ToBoolean(g);
+                if (args.TryGetValue("returnFocus", out var r) && r != null) returnFocus = Convert.ToBoolean(r);
+                if (args.TryGetValue("returnAfterMs", out var ms) && ms != null)
+                    returnAfterMs = (int)Math.Max(0, Math.Min(MCPWindowFocus.MaxReturnAfterMs, Convert.ToDouble(ms)));
+            }
+            catch (Exception ex)
+            {
+                SendJson(response, 400, new { error = $"Invalid JSON body: {ex.Message}" });
+                return;
+            }
+
+            var result = returnFocus
+                ? MCPWindowFocus.ReturnFocus(agentId)
+                : MCPWindowFocus.Focus(returnAfterMs, agentId);
+
+            int status;
+            switch (result.Outcome)
+            {
+                case MCPWindowFocus.FocusOutcome.Refused:     status = 409; break;
+                case MCPWindowFocus.FocusOutcome.Disabled:    status = 403; break;
+                case MCPWindowFocus.FocusOutcome.NoWindow:    status = 500; break;
+                case MCPWindowFocus.FocusOutcome.Unsupported: status = 501; break;
+                default:                                      status = 200; break;
+            }
+
+            var payload = new Dictionary<string, object> { { "outcome", ToCamel(result.Outcome.ToString()) } };
+            if (result.Method != null) payload["method"] = result.Method;
+            if (result.Error != null) payload["error"] = result.Error;
+            if (!returnFocus)
+            {
+                payload["focused"] = result.EditorInFront;
+                if (result.EditorInFront && gameView)
+                {
+                    // Times out only when a long command or a dialog holds the main thread; the step
+                    // still runs once it is free.
+                    var step = ExecuteOnMainThread(() => MCPWindowFocus.FocusGameView(), GameViewFocusTimeoutMs);
+                    payload["gameView"] = step as string ?? "pending";
+                }
+                string returnTo = MCPWindowFocus.ReturnTargetTitle;
+                if (returnTo != null)
+                {
+                    payload["returnTo"] = returnTo;
+                    if (returnAfterMs > 0) payload["returnAfterMs"] = returnAfterMs;
+                }
+            }
+            SendJson(response, status, payload);
+        }
+
+        private static string ToCamel(string name) =>
+            string.IsNullOrEmpty(name) ? name : char.ToLowerInvariant(name[0]) + name.Substring(1);
 
         // ─── Route Request (runs on main thread) ───
 
@@ -1683,7 +1757,10 @@ namespace UnityMCP.Editor
         /// Execute a function on Unity's main thread and wait for the result.
         /// Used by the legacy synchronous path.
         /// </summary>
-        private static object ExecuteOnMainThread(Func<object> action)
+        private static object ExecuteOnMainThread(Func<object> action) =>
+            ExecuteOnMainThread(action, MCPRequestQueue.SyncTimeoutMs);
+
+        private static object ExecuteOnMainThread(Func<object> action, int timeoutMs)
         {
             if (Thread.CurrentThread.ManagedThreadId == 1)
                 return action();
@@ -1702,8 +1779,8 @@ namespace UnityMCP.Editor
                 });
             }
 
-            if (!resetEvent.Wait(MCPRequestQueue.SyncTimeoutMs))
-                return new { error = $"Timeout waiting for Unity main thread after {MCPRequestQueue.SyncTimeoutMs / 1000}s" };
+            if (!resetEvent.Wait(timeoutMs))
+                return new { error = $"Timeout waiting for Unity main thread after {timeoutMs / 1000}s" };
 
             if (exception != null)
             {

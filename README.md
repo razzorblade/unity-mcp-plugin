@@ -165,6 +165,7 @@ Configuration is managed through the MCP Dashboard (`Window > AB Unity MCP > Das
 - **Auto-Start** — Automatically start the bridge when Unity opens (default: `true`)
 - **Category Toggles** — Enable/disable any of the 30+ feature categories
 - **Let AI Answer Blocking Dialogs** — When a native dialog (e.g. "Save / Don't Save / Cancel") blocks the editor, MCP clients are always told its title, message and buttons. With this on (default), they may also press a button; every click is logged to the Console and the action history. Windows editor only.
+- **Let AI Bring the Editor to the Front** — Unity throttles an editor in the background, so the Game view renders at a few frames per second. With this on (default), MCP clients may bring the editor to the front and focus the Game view for playtesting and captures, then hand the foreground back. Every focus change is logged. Windows editor only.
 
 Settings are stored in `EditorPrefs` and persist across sessions.
 

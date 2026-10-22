@@ -4,7 +4,28 @@ All notable changes to this package will be documented in this file.
 
 ## [Unreleased]
 
-Companion to the server's FishNet tools (`unity_fishnet_*`), `unity_asset_refresh` and `unity_editor_dialog_click`.
+Companion to the server's FishNet tools (`unity_fishnet_*`), `unity_asset_refresh`, `unity_editor_dialog_click` and `unity_editor_focus`.
+
+### Added: bring the editor to the front (protocol 4)
+- **`POST editor/focus` brings a background editor to the foreground.** Unity throttles an editor that is not the foreground window: the Game view renders at a few frames per second and Play Mode crawls, which spoils agent playtesting and captures. The request is handled on the HTTP thread, not the throttled main thread.
+  - **How it gets past the foreground lock:** Windows only lets the foreground process take the foreground, so a plain `SetForegroundWindow` from a background editor usually just flashes the taskbar button. `MCPWindowFocus` escalates, stopping at the first step that works: `SetForegroundWindow`; attaching to the foreground window's input queue (`AttachThreadInput`) and retrying; injecting a zero-distance mouse move, which makes the editor the last input provider, and retrying. A minimized editor is restored, a maximized one stays maximized. The response names the `method` that worked, and success is checked with `GetForegroundWindow`, not assumed.
+  - **Game view:** by default the Game view tab is then focused on the main thread, so a tab docked behind the Scene view renders. A project without a Game view gets one. `gameView: false` skips this step. If a long command or a dialog holds the main thread, `gameView` is `pending` and the step runs once it is free.
+  - **Handing the foreground back:** `returnAfterMs` (up to 600000) returns the foreground to the window that had it, and `returnFocus: true` does so at once. Either is skipped (`userMovedOn`) when the user has switched windows since, so the editor never steals the foreground twice.
+  - Outcomes: `focused`, `alreadyFocused`, `returned`, `nothingToReturn`, `userMovedOn` (200); `refused` when Windows kept another window in front (409); `disabled` (403); `unsupported` on other platforms (501).
+  - Every focus change is logged to the Console and recorded in the action history as `editor/focus` or `editor/focus-return`.
+- **Dashboard → Settings → Editor Window → "Let AI Bring the Editor to the Front"** (project-scoped, on by default).
+- `ping` already reports `applicationFocused`, which is how the server tells an agent the editor is in the background.
+- Windows editor only. Protocol version 3 → 4. `editor/focus` is handled beside `dialog/click`, not in the route switch, so the route registry is unchanged.
+
+### Verified: focus
+- Compiles with 0 errors and no new warnings on 6000.0.79f1, 6000.3.21f1 and 6000.5.1f1.
+- End to end on 6000.0, with the real MCP server over stdio and VS Code in front of the editor:
+  - `unity_play_mode` `play` came back with the `editorInBackground` hint.
+  - Plain `SetForegroundWindow` was refused, as expected for a background process, and `attachThreadInput` brought the editor forward. The Game view tab, docked behind the Scene view, was focused.
+  - Play Mode in a new project (Run In Background off) advanced **0 frames in 4s** in the background and ran at **211 fps** once focused.
+  - A Game view screenshot taken after focusing carried no hint.
+  - `returnAfterMs: 10000` returned the foreground to VS Code after 10s, and `ping` reported `applicationFocused: false` again.
+  - `returnFocus` returned the foreground at once. A second call answered `nothingToReturn`.
 
 ### Added: blocking-dialog detection and answering (protocol 3)
 - **The native dialog blocking the main thread is named.** A dialog raised while an MCP command runs (e.g. "Scene(s) Have Been Modified — Save / Don't Save / Cancel" behind a menu item, or `DisplayDialog` in user code) parks the main thread on a human click. `ping` and every `queue/status` now carry `dialog`: `{ id, kind, title, message, buttons, defaultButton, cancelButton, clickable, blockedMs }`. `busyReason` becomes `blocked by dialog "<title>"`, and `executingTicketId` names the command the main thread is inside.

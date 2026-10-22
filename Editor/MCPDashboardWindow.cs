@@ -48,6 +48,7 @@ namespace UnityMCP.Editor
         private Label _portRestartHint;
         private Toggle _mppmToggle;
         private Toggle _dialogClickToggle;
+        private Toggle _windowFocusToggle;
 
         private string _statusSig, _newsSig, _queueSig, _contextSig, _agentSig, _actionSig, _categorySig;
         private string _expandedTestCategory;
@@ -764,6 +765,19 @@ namespace UnityMCP.Editor
             _dialogClickToggle.RegisterValueChangedCallback(OnDialogClickToggled);
             box.Add(_dialogClickToggle);
 
+            Text(box, "Editor Window", "ab-section-heading");
+
+            _windowFocusToggle = new Toggle("Let AI Bring the Editor to the Front")
+            {
+                value = MCPSettingsManager.AllowWindowFocus,
+                tooltip = "Unity throttles an editor in the background: the Game view renders at a few frames per " +
+                          "second. When on, MCP clients may bring the editor to the front for playtesting and " +
+                          "captures, and hand the foreground back afterwards. This interrupts typing in other " +
+                          "windows. Every focus change is logged. Windows editor only.",
+            };
+            _windowFocusToggle.RegisterValueChangedCallback(OnWindowFocusToggled);
+            box.Add(_windowFocusToggle);
+
             var resetBtn = new Button(OnResetClicked) { text = "Reset All Settings to Defaults" };
             resetBtn.style.marginTop = 8;
             box.Add(resetBtn);
@@ -774,6 +788,7 @@ namespace UnityMCP.Editor
         private void OnManualPortToggled(ChangeEvent<bool> evt) => MCPSettingsManager.UseManualPort = evt.newValue;
         private void OnMppmToggled(ChangeEvent<bool> evt) => MCPSettingsManager.StartOnVirtualPlayers = evt.newValue;
         private void OnDialogClickToggled(ChangeEvent<bool> evt) => MCPSettingsManager.AllowDialogClick = evt.newValue;
+        private void OnWindowFocusToggled(ChangeEvent<bool> evt) => MCPSettingsManager.AllowWindowFocus = evt.newValue;
 
         private void OnPortChanged(ChangeEvent<int> evt)
         {
@@ -820,6 +835,7 @@ namespace UnityMCP.Editor
 
             _mppmToggle.SetValueWithoutNotify(MCPSettingsManager.StartOnVirtualPlayers);
             _dialogClickToggle.SetValueWithoutNotify(MCPSettingsManager.AllowDialogClick);
+            _windowFocusToggle.SetValueWithoutNotify(MCPSettingsManager.AllowWindowFocus);
         }
 
         // ─── Version footer ──────────────────────────────────────────────

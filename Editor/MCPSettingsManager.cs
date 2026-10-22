@@ -204,6 +204,21 @@ namespace UnityMCP.Editor
             }
         }
 
+        /// <summary>
+        /// Whether MCP clients may bring the editor to the foreground (a background editor is
+        /// throttled, so the Game view renders at a few frames per second). Mirrored into
+        /// <see cref="MCPWindowFocus.Enabled"/> because focus requests are handled off the main thread.
+        /// </summary>
+        public static bool AllowWindowFocus
+        {
+            get => EditorPrefs.GetBool(ProjectPrefix + "AllowWindowFocus", true);
+            set
+            {
+                EditorPrefs.SetBool(ProjectPrefix + "AllowWindowFocus", value);
+                MCPWindowFocus.Enabled = value;
+            }
+        }
+
         // ─── Category Management (project-scoped) ───
 
         public static string[] GetAllCategoryNames() => AllCategories;
@@ -273,6 +288,7 @@ namespace UnityMCP.Editor
             ActionHistoryPersistence = false;
             ActionHistoryMaxEntries = 500;
             AllowDialogClick = true;
+            AllowWindowFocus = true;
             _enabledCategories = null;
             EditorPrefs.DeleteKey(ProjectPrefix + "EnabledCategories");
         }
