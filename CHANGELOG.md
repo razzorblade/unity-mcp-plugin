@@ -4,7 +4,12 @@ All notable changes to this package will be documented in this file.
 
 ## [Unreleased]
 
-Companion to the server's FishNet tools (`unity_fishnet_*`), `unity_asset_refresh`, `unity_editor_dialog_click` and `unity_editor_focus`.
+Companion to the server's FishNet tools (`unity_fishnet_*`), `unity_asset_refresh`, `unity_editor_dialog_click`, `unity_editor_focus` and `unity_restart_editor`.
+
+### Added: relaunch details in the instance registry
+- **Registry entries now carry `editorPath`** (`EditorApplication.applicationPath`) **and `launchArgs`** (this editor's command-line arguments). The server's `unity_restart_editor` uses them to relaunch an editor it had to force-kill when the OS doesn't reveal the executable or the exact arguments, as on macOS, where `ps` joins them with spaces.
+  - Unity Hub session arguments are left out (`-useHub`, `-hubIPC`, `-hubSessionId`, `-licensingIpc`, `-cloudEnvironment`), and so is `-accessToken`, a credential that must not land in a shared file.
+  - The fields are additive. The protocol version is unchanged, and servers without the tool ignore them.
 
 ### Added: bring the editor to the front (protocol 4)
 - **`POST editor/focus` brings a background editor to the foreground.** Unity throttles an editor that is not the foreground window: the Game view renders at a few frames per second and Play Mode crawls, which spoils agent playtesting and captures. The request is handled on the HTTP thread, not the throttled main thread.
@@ -66,6 +71,7 @@ Companion to the server's FishNet tools (`unity_fishnet_*`), `unity_asset_refres
   5. A repeat with "Don't Save" returned `true`.
 
 ### Fixed
+- **`instances.json` was written with a UTF-8 BOM** (`File.WriteAllText` with `Encoding.UTF8`). The Node server's `JSON.parse` rejected it, so the server read the registry as empty and fell back to port scanning. The file is now written without a BOM. Reading accepts both.
 - **`UnityException: SetLogCallbackDefined can only be called from the main thread`**, followed by a `TypeInitializationException` for `MCPRequestQueue`. The queue registered its console-capture callback in its static constructor, and that constructor runs on whichever thread touches the class first. After a domain reload that was often an HTTP pool thread: a ping reads the queue counters off-thread, before the first editor tick. Unity rejected the registration, and the failed type initializer left the queue unusable until the next reload. The callback is now registered from an `[InitializeOnLoadMethod]`, which always runs on the main thread, so the type initializer no longer calls Unity APIs.
 
 ### Added: `asset/refresh`

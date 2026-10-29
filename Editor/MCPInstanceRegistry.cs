@@ -253,6 +253,10 @@ namespace UnityMCP.Editor
                     // keep auto-selecting the main editor instead of demanding a manual pick.
                     { "isVirtualPlayer", MCPEditorHealth.IsVirtualPlayer },
                     { "mainProjectPath", MCPEditorHealth.MainProjectPath },
+                    // Lets the server relaunch this editor after force-killing it when it hangs
+                    // (unity_restart_editor), even where the OS won't reveal the exe/args.
+                    { "editorPath", EditorApplication.applicationPath },
+                    { "launchArgs", GetLaunchArgs() },
                     { "registeredAt", nowUtc },
                     { "lastSeen", nowUtc }
                 };
@@ -520,7 +524,8 @@ namespace UnityMCP.Editor
                     list.Add(dict);
 
                 string json = MiniJson.Serialize(list);
-                File.WriteAllText(RegistryPath, json, Encoding.UTF8);
+                // No BOM: Encoding.UTF8 emits one, and JSON parsers (the Node server's) reject it.
+                File.WriteAllText(RegistryPath, json, new UTF8Encoding(false));
             }
             catch (Exception ex)
             {
@@ -532,6 +537,30 @@ namespace UnityMCP.Editor
         {
             string dataPath = Application.dataPath;
             return dataPath.Substring(0, dataPath.Length - "/Assets".Length);
+        }
+
+        // Unity Hub session arguments: meaningless outside that Hub session, and -accessToken is a
+        // credential that must not be written to a shared file.
+        private static readonly HashSet<string> VolatileFlags =
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "-useHub", "-hubIPC" };
+        private static readonly HashSet<string> VolatileValued =
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            { "-hubSessionId", "-licensingIpc", "-cloudEnvironment", "-accessToken" };
+
+        /// <summary>
+        /// This editor's launch arguments (without the executable), minus Hub-session arguments.
+        /// </summary>
+        private static List<string> GetLaunchArgs()
+        {
+            string[] argv = Environment.GetCommandLineArgs();
+            var args = new List<string>(argv.Length);
+            for (int i = 1; i < argv.Length; i++)
+            {
+                if (VolatileFlags.Contains(argv[i])) continue;
+                if (VolatileValued.Contains(argv[i])) { i++; continue; }
+                args.Add(argv[i]);
+            }
+            return args;
         }
     }
 }
